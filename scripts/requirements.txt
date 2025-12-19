@@ -1,0 +1,3 @@
+python-libarchive
+cryptography==40.0.1
+
