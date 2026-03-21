@@ -7,6 +7,7 @@ import logging
 import fnmatch
 import pickle
 import base64
+import json
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -27,6 +28,7 @@ CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
 MODBUS_FILE = "/home/root/.ne/modbus_addr"
 AUTO_UPDATE_CONFIG_FILE = "/home/root/.ne/auto_update_config"
+UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
@@ -34,6 +36,25 @@ START_TIME = time.time()
 # Auto-update configuration
 auto_update_enabled = False
 pending_update_version = None
+
+
+def write_update_status(status: str, message: str):
+    """Write firmware update status to JSON file for display feedback
+    
+    Status values: 'initializing', 'extracting', 'verifying', 'installing', 'rebooting', 'error'
+    """
+    try:
+        os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
+        status_data = {
+            "status": status,
+            "message": message,
+            "timestamp": int(time.time())
+        }
+        with open(UPDATE_STATUS_FILE, 'w') as f:
+            json.dump(status_data, f)
+        logger.info(f"Update status: {status} - {message}")
+    except Exception as e:
+        logger.error(f"Failed to write update status: {e}")
 
 
 async def get_mac_address() -> str:
@@ -348,10 +369,14 @@ async def start_auto_update():
         # Check if firmware file exists
         if not os.path.isfile(SWUPDATE_FILE):
             logger.error("No firmware file found for update")
+            write_update_status("error", "No firmware file available")
             return {
                 "status": "error",
                 "message": "No firmware file available"
             }
+        
+        # Write status: extracting
+        write_update_status("extracting", "Extracting firmware archive...")
         
         # Use existing swupdate function to apply the firmware
         logger.info(f"Applying firmware update from {SWUPDATE_FILE}")
@@ -359,8 +384,14 @@ async def start_auto_update():
         
         logger.info("Firmware update applied, scheduling system reboot...")
         
-        # Schedule reboot after a short delay to ensure the update is applied
-        await asyncio.sleep(2)
+        # Write status: verifying and installing
+        write_update_status("installing", "Installing firmware...")
+        
+        # Wait a moment for the update to complete
+        await asyncio.sleep(8)
+        
+        # Write status: rebooting
+        write_update_status("rebooting", "Rebooting device...")
         reboot()
         
         return {
@@ -370,6 +401,7 @@ async def start_auto_update():
         
     except Exception as e:
         logger.error(f"Auto-update failed: {e}")
+        write_update_status("error", f"Auto-update failed: {str(e)}")
         return {
             "status": "error",
             "message": f"Auto-update failed: {str(e)}"
