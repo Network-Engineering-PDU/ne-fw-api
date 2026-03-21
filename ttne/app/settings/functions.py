@@ -117,12 +117,19 @@ async def write_snmp_nms(name, contact, location):
 
 
 def update(update_file):
+    """Apply firmware update from manually uploaded file"""
     logger.info("Saving update...")
     os.rename(update_file, SWUPDATE_FILE)
     logger.info("Update saved")
     shutil.rmtree("/home/root/.ne/uploads")
     logger.info("Upload directory removed")
+    
+    # Write initial status - firmware has been received and extraction/install is starting
+    write_update_status("initializing", "Preparing firmware installation...")
+    
+    # Schedule the update script to run
     utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
+    logger.info("Firmware update scheduled in 5 seconds")
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
@@ -327,6 +334,18 @@ async def get_auto_update_config() -> bool:
 
 async def check_for_updates() -> dict:
     """Check if new firmware version is available"""
+    global auto_update_enabled
+    
+    # Respect user preference: if auto-update is disabled, don't check
+    if not auto_update_enabled:
+        logger.info("Auto-update is disabled, skipping check")
+        return {
+            "version_available": False,
+            "current_version": "unknown",
+            "new_version": None,
+            "changelog": None
+        }
+    
     from ttne.config import Config
     
     logger.info("Checking for firmware updates...")
@@ -363,7 +382,18 @@ async def check_for_updates() -> dict:
 
 async def start_auto_update():
     """Start the firmware auto-update process"""
+    global auto_update_enabled
+    
     logger.info("Starting auto-update process...")
+    
+    # Respect user preference: if auto-update is disabled, reject the request
+    if not auto_update_enabled:
+        logger.warn("Auto-update is disabled, rejecting update request")
+        write_update_status("error", "Auto-update is disabled")
+        return {
+            "status": "error",
+            "message": "Auto-update is disabled"
+        }
     
     try:
         # Check if firmware file exists
