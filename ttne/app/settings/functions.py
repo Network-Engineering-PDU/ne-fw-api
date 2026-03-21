@@ -26,9 +26,14 @@ CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
 MODBUS_FILE = "/home/root/.ne/modbus_addr"
+AUTO_UPDATE_CONFIG_FILE = "/home/root/.ne/auto_update_config"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
+
+# Auto-update configuration
+auto_update_enabled = False
+pending_update_version = None
 
 
 async def get_mac_address() -> str:
@@ -265,3 +270,107 @@ async def read_modbus() -> int:
         logger.info(f"Modbus address: {addr}")
         return addr
     return -1
+
+
+async def set_auto_update_config(enabled: bool):
+    """Enable/disable auto-update checking"""
+    global auto_update_enabled
+    auto_update_enabled = enabled
+    try:
+        os.makedirs(os.path.dirname(AUTO_UPDATE_CONFIG_FILE), exist_ok=True)
+        with open(AUTO_UPDATE_CONFIG_FILE, 'w') as f:
+            f.write(f"enabled={int(enabled)}\n")
+        logger.info(f"Auto-update configured: {enabled}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to set auto-update config: {e}")
+        return False
+
+
+async def get_auto_update_config() -> bool:
+    """Get auto-update configuration status"""
+    global auto_update_enabled
+    try:
+        if os.path.isfile(AUTO_UPDATE_CONFIG_FILE):
+            with open(AUTO_UPDATE_CONFIG_FILE, 'r') as f:
+                line = f.readline()
+                if 'enabled=1' in line:
+                    auto_update_enabled = True
+                    return True
+        auto_update_enabled = False
+        return False
+    except Exception as e:
+        logger.error(f"Failed to get auto-update config: {e}")
+        return False
+
+
+async def check_for_updates() -> dict:
+    """Check if new firmware version is available"""
+    from ttne.config import Config
+    
+    logger.info("Checking for firmware updates...")
+    
+    # Get current version
+    current_version = Config.VERSION
+    
+    # TODO: In production, this would:
+    # 1. Connect to a firmware server (HTTP/HTTPS)
+    # 2. Download version manifest/metadata
+    # 3. Compare versions
+    # 4. Return available new version
+    #
+    # For now, we simulate this:
+    # If a firmware file exists at SWUPDATE_FILE, consider a new version available
+    
+    if os.path.isfile(SWUPDATE_FILE):
+        # File exists, so we have a firmware waiting to be installed
+        logger.info(f"Firmware file found: {SWUPDATE_FILE}")
+        return {
+            "version_available": True,
+            "current_version": current_version,
+            "new_version": "1.0.1",  # TODO: Extract from firmware metadata
+            "changelog": "Stability improvements and bug fixes"
+        }
+    
+    return {
+        "version_available": False,
+        "current_version": current_version,
+        "new_version": None,
+        "changelog": None
+    }
+
+
+async def start_auto_update():
+    """Start the firmware auto-update process"""
+    logger.info("Starting auto-update process...")
+    
+    try:
+        # Check if firmware file exists
+        if not os.path.isfile(SWUPDATE_FILE):
+            logger.error("No firmware file found for update")
+            return {
+                "status": "error",
+                "message": "No firmware file available"
+            }
+        
+        # Use existing swupdate function to apply the firmware
+        logger.info(f"Applying firmware update from {SWUPDATE_FILE}")
+        update(SWUPDATE_FILE)
+        
+        logger.info("Firmware update applied, scheduling system reboot...")
+        
+        # Schedule reboot after a short delay to ensure the update is applied
+        await asyncio.sleep(2)
+        reboot()
+        
+        return {
+            "status": "updating",
+            "message": "Firmware update started and system will reboot"
+        }
+        
+    except Exception as e:
+        logger.error(f"Auto-update failed: {e}")
+        return {
+            "status": "error",
+            "message": f"Auto-update failed: {str(e)}"
+        }
