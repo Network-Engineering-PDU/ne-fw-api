@@ -41,6 +41,24 @@ async def put_snmp_nms(data: models.SnmpNms):
 async def post_swupdate(data: models.SWUpdate):
     functions.update(data.filename)
 
+@router.get("/update-status")
+async def get_update_status() -> models.UpdateStatus:
+    status = await functions.get_update_status()
+    return models.UpdateStatus(
+        is_pending=status["is_pending"],
+        auto_update=status["auto_update"],
+        update_server=status["update_server"]
+    )
+
+@router.put("/update-settings")
+async def put_update_settings(data: models.UpdateSettings):
+    await functions.set_update_settings(data.auto_update, data.update_server)
+
+@router.post("/update-confirm")
+async def post_update_confirm(data: models.UpdateConfirm):
+    result = await functions.confirm_update(data.confirm)
+    return {"success": result}
+
 @router.post("/system-reboot")
 async def post_system_reboot():
     functions.reboot()
