@@ -29,6 +29,8 @@ LICENSE_FILE = "/home/root/.ne/license"
 MODBUS_FILE = "/home/root/.ne/modbus_addr"
 AUTO_UPDATE_CONFIG_FILE = "/home/root/.ne/auto_update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
+REMOTE_UPDATE_PENDING_FILE = "/home/root/.ne/remote_update_pending"
+REMOTE_UPDATE_CONFIRMED_FILE = "/home/root/.ne/remote_update_confirmed"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
@@ -117,19 +119,61 @@ async def write_snmp_nms(name, contact, location):
 
 
 def update(update_file):
-    """Apply firmware update from manually uploaded file"""
-    logger.info("Saving update...")
+    """Apply firmware update from manually uploaded file
+    
+    This function is called when user uploads firmware via web UI.
+    It signals the PDU display that an update is pending and waits for user confirmation.
+    """
+    logger.info("Firmware file received for manual update")
     os.rename(update_file, SWUPDATE_FILE)
-    logger.info("Update saved")
-    shutil.rmtree("/home/root/.ne/uploads")
+    logger.info("Update file saved to: %s", SWUPDATE_FILE)
+    shutil.rmtree("/home/root/.ne/uploads", ignore_errors=True)
     logger.info("Upload directory removed")
     
-    # Write initial status - firmware has been received and extraction/install is starting
-    write_update_status("initializing", "Preparing firmware installation...")
+    # Get filename for display
+    filename = os.path.basename(SWUPDATE_FILE)
     
-    # Schedule the update script to run
-    utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
-    logger.info("Firmware update scheduled in 5 seconds")
+    # Create pending file to signal display that remote update is waiting for confirmation
+    try:
+        os.makedirs(os.path.dirname(REMOTE_UPDATE_PENDING_FILE), exist_ok=True)
+        with open(REMOTE_UPDATE_PENDING_FILE, 'w') as f:
+            f.write(filename)
+        logger.info("Pending update signal created for display: %s", filename)
+        write_update_status("initializing", f"Initializing firmware update ({filename})...")
+    except Exception as e:
+        logger.error("Failed to create pending update file: %s", str(e))
+        write_update_status("error", "Failed to create pending update signal")
+
+
+def start_manual_update():
+    """Start the actual manual firmware update after user confirmed on PDU display"""
+    logger.info("Starting manual firmware update (user confirmed on display)")
+    
+    if not os.path.isfile(SWUPDATE_FILE):
+        logger.error("Update file not found")
+        write_update_status("error", "Update file not found")
+        return {"status": "error", "message": "Update file not found"}
+    
+    # Clean up pending and confirmation files
+    try:
+        if os.path.exists(REMOTE_UPDATE_PENDING_FILE):
+            os.remove(REMOTE_UPDATE_PENDING_FILE)
+        if os.path.exists(REMOTE_UPDATE_CONFIRMED_FILE):
+            os.remove(REMOTE_UPDATE_CONFIRMED_FILE)
+    except Exception as e:
+        logger.warn("Failed to clean up signal files: %s", str(e))
+    
+    # Write status: extracting
+    write_update_status("extracting", "Extracting firmware archive...")
+    
+    # Schedule the update script to run after a short delay
+    utils.schedule_in(2, utils.shell(f"usb_autorun.sh run {SWUPDATE_FILE}"))
+    logger.info("Firmware update scheduled in 2 seconds")
+    
+    # Write status: installing (will update via status file during actual update)
+    write_update_status("installing", "Installing firmware...")
+    
+    return {"status": "updating", "message": "Firmware update started"}
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")

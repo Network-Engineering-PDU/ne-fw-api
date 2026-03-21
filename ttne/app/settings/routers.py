@@ -44,6 +44,22 @@ async def put_snmp_nms(data: models.SnmpNms):
 async def post_swupdate(data: models.SWUpdate):
     functions.update(data.filename)
 
+@router.get("/manual-update-start")
+async def get_manual_update_start() -> models.AutoUpdateStart:
+    """Start the manual firmware update after user confirmed on PDU display"""
+    try:
+        result = await asyncio.to_thread(functions.start_manual_update)
+        return models.AutoUpdateStart(
+            status=result.get("status", "ok"),
+            message=result.get("message", "Update started")
+        )
+    except Exception as e:
+        logger.error("Error starting manual update: %s", str(e))
+        return models.AutoUpdateStart(
+            status="error",
+            message=str(e)
+        )
+
 @router.post("/system-reboot")
 async def post_system_reboot():
     functions.reboot()
