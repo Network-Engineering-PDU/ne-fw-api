@@ -163,17 +163,24 @@ def start_manual_update():
     except Exception as e:
         logger.warn("Failed to clean up signal files: %s", str(e))
     
-    # Write status: extracting
+    # Write initial status for display
     write_update_status("extracting", "Extracting firmware archive...")
     
-    # Schedule the update script to run after a short delay
-    utils.schedule_in(2, utils.shell(f"usb_autorun.sh run {SWUPDATE_FILE}"))
-    logger.info("Firmware update scheduled in 2 seconds")
+    # Run the firmware update wrapper script in background
+    # This script will write status updates as it progresses
+    wrapper_script = "/usr/bin/firmware_update_wrapper.sh"
     
-    # Write status: installing (will update via status file during actual update)
-    write_update_status("installing", "Installing firmware...")
+    if not os.path.exists(wrapper_script):
+        logger.error("Firmware update wrapper script not found at: %s", wrapper_script)
+        write_update_status("error", "Update wrapper script not found")
+        return {"status": "error", "message": "Update wrapper script not found"}
+    
+    # Schedule the update script to run in background (after a short delay to ensure display is ready)
+    utils.schedule_in(1, utils.shell(f"chmod +x {wrapper_script} && {wrapper_script} {SWUPDATE_FILE}"))
+    logger.info("Firmware update started via wrapper script")
     
     return {"status": "updating", "message": "Firmware update started"}
+
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
@@ -449,28 +456,28 @@ async def start_auto_update():
                 "message": "No firmware file available"
             }
         
-        # Write status: extracting
+        # Write initial status
         write_update_status("extracting", "Extracting firmware archive...")
         
-        # Use existing swupdate function to apply the firmware
+        # Use wrapper script to apply the firmware
         logger.info(f"Applying firmware update from {SWUPDATE_FILE}")
-        update(SWUPDATE_FILE)
+        wrapper_script = "/usr/bin/firmware_update_wrapper.sh"
         
-        logger.info("Firmware update applied, scheduling system reboot...")
+        if not os.path.exists(wrapper_script):
+            logger.error("Firmware update wrapper script not found at: %s", wrapper_script)
+            write_update_status("error", "Update wrapper script not found")
+            return {
+                "status": "error",
+                "message": "Update wrapper script not found"
+            }
         
-        # Write status: verifying and installing
-        write_update_status("installing", "Installing firmware...")
-        
-        # Wait a moment for the update to complete
-        await asyncio.sleep(8)
-        
-        # Write status: rebooting
-        write_update_status("rebooting", "Rebooting device...")
-        reboot()
+        # Schedule the update script to run in background
+        utils.schedule_in(2, utils.shell(f"chmod +x {wrapper_script} && {wrapper_script} {SWUPDATE_FILE}"))
+        logger.info("Auto-update firmware update started via wrapper script")
         
         return {
             "status": "updating",
-            "message": "Firmware update started and system will reboot"
+            "message": "Firmware auto-update started and system will reboot"
         }
         
     except Exception as e:
