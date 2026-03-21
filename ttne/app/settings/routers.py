@@ -42,7 +42,23 @@ async def put_snmp_nms(data: models.SnmpNms):
 
 @router.post("/swupdate")
 async def post_swupdate(data: models.SWUpdate):
+    """Accept firmware file upload
+    
+    NOTE: Only accepts uploads if auto-update is enabled
+    """
+    # Check if auto-update is enabled before accepting upload
+    if not functions.auto_update_enabled:
+        logger.warn("Firmware upload rejected: auto-update is disabled")
+        return models.AutoUpdateStart(
+            status="error",
+            message="Firmware updates are disabled. Enable auto-update in device settings."
+        )
+    
     functions.update(data.filename)
+    return models.AutoUpdateStart(
+        status="ok",
+        message="Firmware file received and waiting for user confirmation"
+    )
 
 @router.get("/manual-update-start")
 async def get_manual_update_start() -> models.AutoUpdateStart:

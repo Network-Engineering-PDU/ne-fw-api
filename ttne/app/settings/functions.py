@@ -123,7 +123,25 @@ def update(update_file):
     
     This function is called when user uploads firmware via web UI.
     It signals the PDU display that an update is pending and waits for user confirmation.
+    
+    NOTE: Updates are only allowed if auto-update is enabled (respects user preference)
     """
+    global auto_update_enabled
+    
+    # Check if auto-update is enabled - if not, reject all updates (manual and auto)
+    if not auto_update_enabled:
+        logger.warn("Firmware update rejected: Auto-update is disabled by user")
+        write_update_status("error", "Firmware updates are disabled. Enable auto-update to receive updates.")
+        # Clean up uploaded file
+        try:
+            if os.path.exists(update_file):
+                os.remove(update_file)
+            shutil.rmtree("/home/root/.ne/uploads", ignore_errors=True)
+        except Exception as e:
+            logger.warn("Failed to clean up upload: %s", str(e))
+        # Return without creating pending signal - display will not see anything
+        return
+    
     logger.info("Firmware file received for manual update")
     os.rename(update_file, SWUPDATE_FILE)
     logger.info("Update file saved to: %s", SWUPDATE_FILE)
