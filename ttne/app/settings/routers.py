@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from datetime import datetime as dt
 from typing import List, Union
 
@@ -11,8 +10,6 @@ from . import models, functions
 from .. import gateway_helper
 
 MODULE_NAME = "settings"
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/" + MODULE_NAME,
@@ -42,39 +39,7 @@ async def put_snmp_nms(data: models.SnmpNms):
 
 @router.post("/swupdate")
 async def post_swupdate(data: models.SWUpdate):
-    """Accept firmware file upload
-    
-    NOTE: Only accepts uploads if auto-update is enabled
-    """
-    # Check if auto-update is enabled before accepting upload
-    if not functions.auto_update_enabled:
-        logger.warn("Firmware upload rejected: auto-update is disabled")
-        return models.AutoUpdateStart(
-            status="error",
-            message="Firmware updates are disabled. Enable auto-update in device settings."
-        )
-    
     functions.update(data.filename)
-    return models.AutoUpdateStart(
-        status="ok",
-        message="Firmware file received and waiting for user confirmation"
-    )
-
-@router.get("/manual-update-start")
-async def get_manual_update_start() -> models.AutoUpdateStart:
-    """Start the manual firmware update after user confirmed on PDU display"""
-    try:
-        result = await asyncio.to_thread(functions.start_manual_update)
-        return models.AutoUpdateStart(
-            status=result.get("status", "ok"),
-            message=result.get("message", "Update started")
-        )
-    except Exception as e:
-        logger.error("Error starting manual update: %s", str(e))
-        return models.AutoUpdateStart(
-            status="error",
-            message=str(e)
-        )
 
 @router.post("/system-reboot")
 async def post_system_reboot():
@@ -184,58 +149,4 @@ async def put_modbus_addr(data: models.Modbus):
 @router.get("/modbus")
 async def get_modbus_addr() -> models.Modbus:
     addr = await functions.read_modbus()
-    return models.Modbus(addr=addr)
-
-
-# Auto-Update Endpoints
-
-@router.get("/auto-update-config")
-async def get_auto_update_config(enabled: int = 0) -> models.AutoUpdateConfig:
-    """Enable or disable auto-update checking"""
-    success = await functions.set_auto_update_config(bool(enabled))
-    return models.AutoUpdateConfig(
-        enabled=bool(enabled),
-        message=f"Auto-update {'enabled' if enabled else 'disabled'}"
-    )
-
-
-@router.get("/auto-update-check")
-async def auto_update_check() -> models.AutoUpdateCheck:
-    """Check if new firmware version is available"""
-    try:
-        result = await functions.check_for_updates()
-        return models.AutoUpdateCheck(
-            version_available=result.get('version_available', False),
-            current_version=result.get('current_version', 'unknown'),
-            new_version=result.get('new_version'),
-            changelog=result.get('changelog')
-        )
-    except Exception as e:
-        logger.error(f"Error checking for updates: {e}")
-        return models.AutoUpdateCheck(
-            version_available=False,
-            current_version="unknown",
-            new_version=None,
-            changelog=None
-        )
-
-
-@router.post("/auto-update-start")
-async def auto_update_start() -> models.AutoUpdateStart:
-    """Start the firmware auto-update process
-    
-    Shows "Updating..." on display, applies firmware, and reboots system
-    """
-    try:
-        result = await functions.start_auto_update()
-        return models.AutoUpdateStart(
-            status=result.get('status', 'error'),
-            message=result.get('message', 'Unknown error')
-        )
-    except Exception as e:
-        logger.error(f"Error starting auto-update: {e}")
-        return models.AutoUpdateStart(
-            status="error",
-            message=f"Failed to start update: {str(e)}"
-        )
     return models.Modbus(addr=addr)

@@ -7,7 +7,6 @@ import logging
 import fnmatch
 import pickle
 import base64
-import json
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -27,36 +26,9 @@ CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
 MODBUS_FILE = "/home/root/.ne/modbus_addr"
-AUTO_UPDATE_CONFIG_FILE = "/home/root/.ne/auto_update_config"
-UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
-REMOTE_UPDATE_PENDING_FILE = "/home/root/.ne/remote_update_pending"
-REMOTE_UPDATE_CONFIRMED_FILE = "/home/root/.ne/remote_update_confirmed"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
-
-# Auto-update configuration
-auto_update_enabled = False
-pending_update_version = None
-
-
-def write_update_status(status: str, message: str):
-    """Write firmware update status to JSON file for display feedback
-    
-    Status values: 'initializing', 'extracting', 'verifying', 'installing', 'rebooting', 'error'
-    """
-    try:
-        os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
-        status_data = {
-            "status": status,
-            "message": message,
-            "timestamp": int(time.time())
-        }
-        with open(UPDATE_STATUS_FILE, 'w') as f:
-            json.dump(status_data, f)
-        logger.info(f"Update status: {status} - {message}")
-    except Exception as e:
-        logger.error(f"Failed to write update status: {e}")
 
 
 async def get_mac_address() -> str:
@@ -119,86 +91,12 @@ async def write_snmp_nms(name, contact, location):
 
 
 def update(update_file):
-    """Apply firmware update from manually uploaded file
-    
-    This function is called when user uploads firmware via web UI.
-    It signals the PDU display that an update is pending and waits for user confirmation.
-    
-    NOTE: Updates are only allowed if auto-update is enabled (respects user preference)
-    """
-    global auto_update_enabled
-    
-    # Check if auto-update is enabled - if not, reject all updates (manual and auto)
-    if not auto_update_enabled:
-        logger.warn("Firmware update rejected: Auto-update is disabled by user")
-        write_update_status("error", "Firmware updates are disabled. Enable auto-update to receive updates.")
-        # Clean up uploaded file
-        try:
-            if os.path.exists(update_file):
-                os.remove(update_file)
-            shutil.rmtree("/home/root/.ne/uploads", ignore_errors=True)
-        except Exception as e:
-            logger.warn("Failed to clean up upload: %s", str(e))
-        # Return without creating pending signal - display will not see anything
-        return
-    
-    logger.info("Firmware file received for manual update")
+    logger.info("Saving update...")
     os.rename(update_file, SWUPDATE_FILE)
-    logger.info("Update file saved to: %s", SWUPDATE_FILE)
-    shutil.rmtree("/home/root/.ne/uploads", ignore_errors=True)
+    logger.info("Update saved")
+    shutil.rmtree("/home/root/.ne/uploads")
     logger.info("Upload directory removed")
-    
-    # Get filename for display
-    filename = os.path.basename(SWUPDATE_FILE)
-    
-    # Create pending file to signal display that remote update is waiting for confirmation
-    try:
-        os.makedirs(os.path.dirname(REMOTE_UPDATE_PENDING_FILE), exist_ok=True)
-        with open(REMOTE_UPDATE_PENDING_FILE, 'w') as f:
-            f.write(filename)
-        logger.info("Pending update signal created for display: %s", filename)
-        write_update_status("initializing", f"Initializing firmware update ({filename})...")
-    except Exception as e:
-        logger.error("Failed to create pending update file: %s", str(e))
-        write_update_status("error", "Failed to create pending update signal")
-
-
-def start_manual_update():
-    """Start the actual manual firmware update after user confirmed on PDU display"""
-    logger.info("Starting manual firmware update (user confirmed on display)")
-    
-    if not os.path.isfile(SWUPDATE_FILE):
-        logger.error("Update file not found")
-        write_update_status("error", "Update file not found")
-        return {"status": "error", "message": "Update file not found"}
-    
-    # Clean up pending and confirmation files
-    try:
-        if os.path.exists(REMOTE_UPDATE_PENDING_FILE):
-            os.remove(REMOTE_UPDATE_PENDING_FILE)
-        if os.path.exists(REMOTE_UPDATE_CONFIRMED_FILE):
-            os.remove(REMOTE_UPDATE_CONFIRMED_FILE)
-    except Exception as e:
-        logger.warn("Failed to clean up signal files: %s", str(e))
-    
-    # Write initial status for display
-    write_update_status("extracting", "Extracting firmware archive...")
-    
-    # Run the firmware update wrapper script in background
-    # This script will write status updates as it progresses
-    wrapper_script = "/usr/bin/firmware_update_wrapper.sh"
-    
-    if not os.path.exists(wrapper_script):
-        logger.error("Firmware update wrapper script not found at: %s", wrapper_script)
-        write_update_status("error", "Update wrapper script not found")
-        return {"status": "error", "message": "Update wrapper script not found"}
-    
-    # Schedule the update script to run in background (after a short delay to ensure display is ready)
-    utils.schedule_in(1, utils.shell(f"chmod +x {wrapper_script} && {wrapper_script} {SWUPDATE_FILE}"))
-    logger.info("Firmware update started via wrapper script")
-    
-    return {"status": "updating", "message": "Firmware update started"}
-
+    utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
@@ -367,141 +265,3 @@ async def read_modbus() -> int:
         logger.info(f"Modbus address: {addr}")
         return addr
     return -1
-
-
-async def set_auto_update_config(enabled: bool):
-    """Enable/disable auto-update checking"""
-    global auto_update_enabled
-    auto_update_enabled = enabled
-    try:
-        os.makedirs(os.path.dirname(AUTO_UPDATE_CONFIG_FILE), exist_ok=True)
-        with open(AUTO_UPDATE_CONFIG_FILE, 'w') as f:
-            f.write(f"enabled={int(enabled)}\n")
-        logger.info(f"Auto-update configured: {enabled}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to set auto-update config: {e}")
-        return False
-
-
-async def get_auto_update_config() -> bool:
-    """Get auto-update configuration status"""
-    global auto_update_enabled
-    try:
-        if os.path.isfile(AUTO_UPDATE_CONFIG_FILE):
-            with open(AUTO_UPDATE_CONFIG_FILE, 'r') as f:
-                line = f.readline()
-                if 'enabled=1' in line:
-                    auto_update_enabled = True
-                    return True
-        auto_update_enabled = False
-        return False
-    except Exception as e:
-        logger.error(f"Failed to get auto-update config: {e}")
-        return False
-
-
-async def check_for_updates() -> dict:
-    """Check if new firmware version is available"""
-    global auto_update_enabled
-    
-    # Respect user preference: if auto-update is disabled, don't check
-    if not auto_update_enabled:
-        logger.info("Auto-update is disabled, skipping check")
-        return {
-            "version_available": False,
-            "current_version": "unknown",
-            "new_version": None,
-            "changelog": None
-        }
-    
-    from ttne.config import Config
-    
-    logger.info("Checking for firmware updates...")
-    
-    # Get current version
-    current_version = Config.VERSION
-    
-    # TODO: In production, this would:
-    # 1. Connect to a firmware server (HTTP/HTTPS)
-    # 2. Download version manifest/metadata
-    # 3. Compare versions
-    # 4. Return available new version
-    #
-    # For now, we simulate this:
-    # If a firmware file exists at SWUPDATE_FILE, consider a new version available
-    
-    if os.path.isfile(SWUPDATE_FILE):
-        # File exists, so we have a firmware waiting to be installed
-        logger.info(f"Firmware file found: {SWUPDATE_FILE}")
-        return {
-            "version_available": True,
-            "current_version": current_version,
-            "new_version": "1.0.1",  # TODO: Extract from firmware metadata
-            "changelog": "Stability improvements and bug fixes"
-        }
-    
-    return {
-        "version_available": False,
-        "current_version": current_version,
-        "new_version": None,
-        "changelog": None
-    }
-
-
-async def start_auto_update():
-    """Start the firmware auto-update process"""
-    global auto_update_enabled
-    
-    logger.info("Starting auto-update process...")
-    
-    # Respect user preference: if auto-update is disabled, reject the request
-    if not auto_update_enabled:
-        logger.warn("Auto-update is disabled, rejecting update request")
-        write_update_status("error", "Auto-update is disabled")
-        return {
-            "status": "error",
-            "message": "Auto-update is disabled"
-        }
-    
-    try:
-        # Check if firmware file exists
-        if not os.path.isfile(SWUPDATE_FILE):
-            logger.error("No firmware file found for update")
-            write_update_status("error", "No firmware file available")
-            return {
-                "status": "error",
-                "message": "No firmware file available"
-            }
-        
-        # Write initial status
-        write_update_status("extracting", "Extracting firmware archive...")
-        
-        # Use wrapper script to apply the firmware
-        logger.info(f"Applying firmware update from {SWUPDATE_FILE}")
-        wrapper_script = "/usr/bin/firmware_update_wrapper.sh"
-        
-        if not os.path.exists(wrapper_script):
-            logger.error("Firmware update wrapper script not found at: %s", wrapper_script)
-            write_update_status("error", "Update wrapper script not found")
-            return {
-                "status": "error",
-                "message": "Update wrapper script not found"
-            }
-        
-        # Schedule the update script to run in background
-        utils.schedule_in(2, utils.shell(f"chmod +x {wrapper_script} && {wrapper_script} {SWUPDATE_FILE}"))
-        logger.info("Auto-update firmware update started via wrapper script")
-        
-        return {
-            "status": "updating",
-            "message": "Firmware auto-update started and system will reboot"
-        }
-        
-    except Exception as e:
-        logger.error(f"Auto-update failed: {e}")
-        write_update_status("error", f"Auto-update failed: {str(e)}")
-        return {
-            "status": "error",
-            "message": f"Auto-update failed: {str(e)}"
-        }

@@ -35,11 +35,3 @@ app.include_router(inputs.router)
 app.include_router(outputs.router)
 app.include_router(settings.router)
 app.include_router(network.router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Load auto-update configuration on startup"""
-    logger.info("Loading auto-update configuration...")
-    await settings.functions.get_auto_update_config()
-    logger.info(f"Auto-update enabled: {settings.functions.auto_update_enabled}")

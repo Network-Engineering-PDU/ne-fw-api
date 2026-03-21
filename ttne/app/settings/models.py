@@ -50,20 +50,3 @@ class Modbus(BaseModel):
 
 class SWUpdate(BaseModel):
     filename: str
-
-
-class AutoUpdateCheck(BaseModel):
-    version_available: bool
-    current_version: str
-    new_version: str = None
-    changelog: str = None
-
-
-class AutoUpdateConfig(BaseModel):
-    enabled: bool
-    message: str = "Auto-update configured"
-
-
-class AutoUpdateStart(BaseModel):
-    status: str
-    message: str
