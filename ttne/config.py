@@ -10,7 +10,7 @@ class Config:
     OM_UPDATE_FORCE = 0
     PMB_UPDATE_FORCE = 0
     NE_PORT = 80
-    NE_IP = "0.0.0.0"
+    NE_IP = "localhost"
     PLATFORM = "cm"
 
 config = Config()

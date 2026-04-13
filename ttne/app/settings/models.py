@@ -50,18 +50,3 @@ class Modbus(BaseModel):
 
 class SWUpdate(BaseModel):
     filename: str
-
-
-class UpdateStatus(BaseModel):
-    is_pending: bool = False
-    auto_update: bool = False
-    update_server: str = ""
-
-
-class UpdateSettings(BaseModel):
-    auto_update: bool
-    update_server: str = ""
-
-
-class UpdateConfirm(BaseModel):
-    confirm: bool

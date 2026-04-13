@@ -195,7 +195,7 @@ class Server:
 
     async def run_server(self):
         uvicorn_config = uvicorn.Config("ttne.app.main:app",
-            host=config.NE_IP, port=config.SERVER_PORT, log_config=LOGGING_CONFIG)
+            port=config.SERVER_PORT, log_config=LOGGING_CONFIG)
         server = uvicorn.Server(uvicorn_config)
         self.server = server
         await server.serve()

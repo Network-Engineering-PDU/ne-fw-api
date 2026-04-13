@@ -26,8 +26,6 @@ CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
 MODBUS_FILE = "/home/root/.ne/modbus_addr"
-UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
-UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
@@ -92,71 +90,13 @@ async def write_snmp_nms(name, contact, location):
     await utils.write_file(SNMP_NMS_FILE, data)
 
 
-def _read_update_config() -> tuple:
-    """Read update configuration (auto_update, update_server)"""
-    if not os.path.isfile(UPDATE_CONFIG_FILE):
-        return False, ""
-    try:
-        with open(UPDATE_CONFIG_FILE, 'r') as f:
-            lines = f.readlines()
-            auto_update = lines[0].strip().lower() == 'true' if len(lines) > 0 else False
-            update_server = lines[1].strip() if len(lines) > 1 else ""
-            return auto_update, update_server
-    except:
-        return False, ""
-
-
-def _write_update_config(auto_update: bool, update_server: str):
-    """Write update configuration"""
-    os.makedirs("/home/root/.ne", exist_ok=True)
-    with open(UPDATE_CONFIG_FILE, 'w') as f:
-        f.write(f"{str(auto_update).lower()}\n")
-        f.write(f"{update_server}\n")
-
-
-def _set_update_pending(pending: bool):
-    """Set update pending status"""
-    os.makedirs("/home/root/.ne", exist_ok=True)
-    with open(UPDATE_STATUS_FILE, 'w') as f:
-        f.write(f"{str(pending).lower()}\n")
-
-
-def _is_update_pending() -> bool:
-    """Check if update is pending"""
-    if not os.path.isfile(UPDATE_STATUS_FILE):
-        return False
-    try:
-        with open(UPDATE_STATUS_FILE, 'r') as f:
-            return f.read().strip().lower() == 'true'
-    except:
-        return False
-
-
 def update(update_file):
     logger.info("Saving update...")
-    auto_update, _ = _read_update_config()
-    
-    if not auto_update:
-        logger.info("Automatic update is disabled, discarding update file")
-        try:
-            os.remove(update_file)
-            if os.path.isdir("/home/root/.ne/uploads"):
-                shutil.rmtree("/home/root/.ne/uploads")
-        except Exception as e:
-            logger.warning(f"Could not clean up files: {e}")
-        return
-    
-    try:
-        os.rename(update_file, SWUPDATE_FILE)
-        logger.info("Update saved")
-        _set_update_pending(True)
-        logger.info("Update marked as pending, waiting for confirmation")
-        if os.path.isdir("/home/root/.ne/uploads"):
-            shutil.rmtree("/home/root/.ne/uploads")
-        logger.info("Upload directory removed")
-    except Exception as e:
-        logger.error(f"Error saving update: {e}")
-        _set_update_pending(False)
+    os.rename(update_file, SWUPDATE_FILE)
+    logger.info("Update saved")
+    shutil.rmtree("/home/root/.ne/uploads")
+    logger.info("Upload directory removed")
+    utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
@@ -325,45 +265,3 @@ async def read_modbus() -> int:
         logger.info(f"Modbus address: {addr}")
         return addr
     return -1
-
-
-# Update settings management
-
-async def get_update_status():
-    """Get current update status"""
-    is_pending = _is_update_pending()
-    auto_update, update_server = _read_update_config()
-    return {
-        "is_pending": is_pending,
-        "auto_update": auto_update,
-        "update_server": update_server
-    }
-
-
-async def set_update_settings(auto_update: bool, update_server: str = ""):
-    """Set automatic update and server settings"""
-    logger.info(f"Setting auto_update={auto_update}, server={update_server}")
-    _write_update_config(auto_update, update_server)
-
-
-async def confirm_update(confirm: bool):
-    """Confirm or reject pending update"""
-    if not _is_update_pending():
-        logger.warning("No update pending")
-        return False
-    
-    if confirm:
-        logger.info("Update confirmed, executing...")
-        _set_update_pending(False)
-        utils.schedule_in(2, utils.shell(f"usb_autorun.sh run {SWUPDATE_FILE}"))
-        return True
-    else:
-        logger.info("Update rejected")
-        _set_update_pending(False)
-        try:
-            if os.path.isfile(SWUPDATE_FILE):
-                os.remove(SWUPDATE_FILE)
-                logger.info("Pending update file removed")
-        except Exception as e:
-            logger.warning(f"Could not remove pending update: {e}")
-        return True

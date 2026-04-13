@@ -8,7 +8,7 @@ You can use the `pip` command to install this application:
 ```
 
 ## ttnedaemon
-Network Engineering application daemon. It starts a server attached to the localhost interface, port 8001. It also periodically sends PDU data to the Django server attached to the localhost interface, port 80, using the Django [Network Engineering API](Network-Engineering-PDU/ne/). It also creates a directory, `~/.ne`, to store some files.
+TycheTools Network Engineering application daemon. It starts a server attached to the localhost interface, port 8001. It also periodically sends PDU data to the Django server attached to the localhost interface, port 80, using the Django [Network Engineering API](https://bitbucket.org/tychetools/ne/). It also creates a directory, `~/.ne`, to store some files.
 
 ```bash
 ttnedaemon start|stop|restart
