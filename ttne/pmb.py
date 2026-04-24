@@ -171,7 +171,7 @@ class Pmb:
         line_data["i_ph"] = d["i_ph"]
         ph = 0
         if d["i"] != 0:
-            ph = d["i_ph"] - d["v_ph"]
+            ph = d["v_ph"] - d["i_ph"]
             if ph > 180.0:
                 ph -= 360.0
             elif ph < -180.0:

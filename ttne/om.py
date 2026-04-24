@@ -142,7 +142,7 @@ class Om:
         current = self.data['i']
         phase = 0
         if current != 0:
-            phase = self.data['i_ph'] - v_ph
+            phase = v_ph - self.data['i_ph']
             phase += self.OM_PHASE_CALIB
             if phase > 180.0:
                 phase -= 360.0
