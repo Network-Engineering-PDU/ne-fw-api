@@ -16,7 +16,7 @@ async def get_iface_mac(iface: str) -> str:
     retval, output = await utils.shell(f"ip address show dev {iface}")
     if retval != 0 or output is None:
         return ""
-    match = re.search("link/ether ([\d\w\:]+)", output)
+    match = re.search(r"link/ether ([\d\w:]+)", output)
     if not match:
         return ""
     return match.group(1)
@@ -33,6 +33,7 @@ async def get_network_config() -> models.MacNetworkConfig:
     await nw_config.get_current_ip()
     await nw_config.get_wifi_ssid()
     await nw_config.get_static()
+    eth_iface = await nw_config._get_active_eth_if() or "eth0"
 
     config_params = models.NetworkConfigParams(
         ip=nw_config.ip,
@@ -46,7 +47,7 @@ async def get_network_config() -> models.MacNetworkConfig:
         type=nw_config.type,
         dhcp=(nw_config.type == NetworkType.ETH_DHCP or nw_config.type == NetworkType.WIFI_DHCP),
         params=config_params,
-        ethernet_mac=await nw_config.get_mac("eth0"),
+        ethernet_mac=await nw_config.get_mac(eth_iface),
         wifi_mac=await nw_config.get_mac("wlan0")
     )
     logger.info(network_config)

@@ -54,15 +54,29 @@ class NetworkConfig():
 
     async def _get_ip_from_if(self, iface):
         retval, output = await utils.shell(f"nmcli -t d show {iface}")
+        ip = None
         for l in output.split("\n"):
             if "IP4.ADDRESS[1]" in l:
                 ip = l.split(":",1)[1].strip()
             if "IP4.GATEWAY" in l:
                 self.gateway = l.split(":",1)[1].strip()
 
+        if ip is None:
+            return False
+
         iface_ip = ipaddress.IPv4Interface(ip)
         self.ip = str(iface_ip.ip)
         self.mask = str(iface_ip.netmask)
+        return True
+
+    async def _get_active_eth_if(self):
+        for iface in NetworkType.get_available_eth_interfaces():
+            retval, output = await utils.shell(
+                f"nmcli -t -f GENERAL.STATE d show {iface}"
+            )
+            if retval == 0 and "connected" in output:
+                return iface
+        return None
 
 
     async def get_current_ip(self):
@@ -71,9 +85,9 @@ class NetworkConfig():
             self.type = NetworkType.ETH_STATIC
             retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE con show {self.ETH_CONN}")
             if "activated" in output:
-                iface = NetworkType.to_interface(self.type)
-                await self._get_ip_from_if(iface)
-                return
+                iface = await self._get_active_eth_if()
+                if iface is not None and await self._get_ip_from_if(iface):
+                    return
 
         retval, output = await utils.shell(f"nmcli -t con show {self.WIFI_CONN}")
         if retval == 0: # Wifi is configured
@@ -90,9 +104,8 @@ class NetworkConfig():
 
         # In other cases the connection is dhcp
         self.type = NetworkType.ETH_DHCP
-        iface = NetworkType.to_interface(self.type)
-        retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE d show {iface}")
-        if "connected" in output:
+        iface = await self._get_active_eth_if()
+        if iface is not None:
             await self._get_ip_from_if(iface)
             return
 
