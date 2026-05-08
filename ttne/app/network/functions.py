@@ -68,7 +68,7 @@ async def set_network_config(config: models.BaseNetworkConfig):
         nw_config.eth_interface = config.eth_interface
     else:
         detected = await nw_config._get_active_eth_if()
-        nw_config.eth_interface = detected or "eth0"
+        nw_config.eth_interface = detected or "eth1"
 
     if not config.dhcp:
         nw_config.ip = config.params.ip
