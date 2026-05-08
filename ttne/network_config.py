@@ -22,6 +22,7 @@ class NetworkConfig():
         self.type = None
         self.ssid = None
         self.psk = None
+        self.eth_interface = "eth0"  # Selected ethernet port: eth0 (ETH-1) or eth1 (ETH-2)
         self.reset()
     
     def reset(self):
@@ -33,6 +34,7 @@ class NetworkConfig():
         self.type = NetworkType.UNCONF
         self.ssid = ""
         self.psk = ""
+        self.eth_interface = "eth0"
 
     def is_static(self):
         return NetworkType.is_static(self.type)
@@ -87,6 +89,7 @@ class NetworkConfig():
             if "activated" in output:
                 iface = await self._get_active_eth_if()
                 if iface is not None and await self._get_ip_from_if(iface):
+                    self.eth_interface = iface  # Store which interface is being used
                     return
 
         retval, output = await utils.shell(f"nmcli -t con show {self.WIFI_CONN}")
@@ -106,6 +109,7 @@ class NetworkConfig():
         self.type = NetworkType.ETH_DHCP
         iface = await self._get_active_eth_if()
         if iface is not None:
+            self.eth_interface = iface  # Store which interface is being used for DHCP
             await self._get_ip_from_if(iface)
             return
 
@@ -127,11 +131,12 @@ class NetworkConfig():
         retval, output = await utils.shell(f"nmcli con up {self.WIFI_CONN}")
 
     async def set_ethernet(self):
-        logger.info("Set Ethernet")
+        logger.info(f"Set Ethernet on interface {self.eth_interface}")
         retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN}")
 
         if self.is_static():
-            iface = NetworkType.to_interface(self.type)
+            # Use stored eth_interface preference (eth0 or eth1)
+            iface = self.eth_interface
             iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
             retval, output = await utils.shell(f"nmcli connection add type ethernet con-name ble-eth-conn ifname {iface} ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{self.dns1},{self.dns2}'")
             retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN}")
