@@ -516,7 +516,7 @@ async def read_modbus() -> int:
 # Update Status Management
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
-DEFAULT_AUTO_UPDATE = True
+DEFAULT_AUTO_UPDATE = False
 
 
 def _read_update_config():
