@@ -1,4 +1,6 @@
 # pylint: disable=no-name-in-module
+from typing import List, Optional
+
 from pydantic import BaseModel
 from ttne.config import Config
 from ttne.version import OM_VERSION, PMB_VERSION
@@ -50,3 +52,43 @@ class Modbus(BaseModel):
 
 class SWUpdate(BaseModel):
     filename: str
+
+
+class UpdateStatus(BaseModel):
+    is_pending: bool = False
+    auto_update: bool = False
+    update_server: str = ""
+
+
+class UpdateSettings(BaseModel):
+    auto_update: bool
+    update_server: str
+
+
+class UpdateConfirm(BaseModel):
+    confirm: bool
+
+
+class BluetoothSettings(BaseModel):
+    powered: Optional[bool] = None
+    pairable: Optional[bool] = None
+    discoverable: Optional[bool] = None
+
+
+class BluetoothDevice(BaseModel):
+    mac: str
+    name: str = ""
+    paired: bool = False
+    trusted: bool = False
+    connected: bool = False
+    rssi: Optional[int] = None
+
+
+class BluetoothStatus(BaseModel):
+    controller_mac: str = ""
+    name: str = ""
+    powered: bool = False
+    pairable: bool = False
+    discoverable: bool = False
+    discovering: bool = False
+    devices: List[BluetoothDevice] = []

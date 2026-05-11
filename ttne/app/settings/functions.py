@@ -94,9 +94,25 @@ def update(update_file):
     logger.info("Saving update...")
     os.rename(update_file, SWUPDATE_FILE)
     logger.info("Update saved")
-    shutil.rmtree("/home/root/.ne/uploads")
-    logger.info("Upload directory removed")
-    utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
+    
+    # Check if auto-update is enabled
+    auto_update, _ = _read_update_config()
+    
+    if auto_update:
+        # Mark update as pending and wait for confirmation from PDU display
+        _set_update_pending(True)
+        logger.info("Update marked as pending, waiting for user confirmation from PDU")
+    else:
+        # Auto-update disabled, execute immediately
+        logger.info("Auto-update disabled, executing update immediately")
+        utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
+    
+    # Clean up upload directory
+    try:
+        shutil.rmtree("/home/root/.ne/uploads")
+        logger.info("Upload directory removed")
+    except Exception as e:
+        logger.warning(f"Could not remove upload directory: {e}")
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
@@ -125,6 +141,154 @@ def factory_reset():
 async def start_scan():
     logger.info("Start scan")
     return await gateway_helper.start_scan()
+
+
+def _parse_bt_bool(value: str) -> bool:
+    return value.strip().lower() == "yes"
+
+
+async def _bluetoothctl(*commands):
+    cmd = " && ".join([f"echo '{command}'" for command in commands])
+    return await utils.shell(f"({cmd}) | bluetoothctl")
+
+
+async def get_bluetooth_status():
+    logger.info("Reading Bluetooth status")
+    status = {
+        "controller_mac": "",
+        "name": "",
+        "powered": False,
+        "pairable": False,
+        "discoverable": False,
+        "discovering": False,
+        "devices": [],
+    }
+
+    retval, output = await _bluetoothctl("show")
+    if retval == 0 and output:
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("Controller "):
+                parts = line.split()
+                if len(parts) > 1:
+                    status["controller_mac"] = parts[1]
+            elif line.startswith("Name:"):
+                status["name"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Powered:"):
+                status["powered"] = _parse_bt_bool(line.split(":", 1)[1])
+            elif line.startswith("Pairable:"):
+                status["pairable"] = _parse_bt_bool(line.split(":", 1)[1])
+            elif line.startswith("Discoverable:"):
+                status["discoverable"] = _parse_bt_bool(line.split(":", 1)[1])
+            elif line.startswith("Discovering:"):
+                status["discovering"] = _parse_bt_bool(line.split(":", 1)[1])
+
+    retval, output = await _bluetoothctl("devices")
+    if retval != 0 or not output:
+        return status
+
+    seen = set()
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("Device "):
+            continue
+        parts = line.split(" ", 2)
+        if len(parts) < 2 or parts[1] in seen:
+            continue
+        mac = parts[1]
+        seen.add(mac)
+        fallback_name = parts[2] if len(parts) > 2 else mac
+        device = {
+            "mac": mac,
+            "name": fallback_name,
+            "paired": False,
+            "trusted": False,
+            "connected": False,
+            "rssi": None,
+        }
+
+        info_retval, info_output = await _bluetoothctl(f"info {mac}")
+        if info_retval == 0 and info_output:
+            for info_line in info_output.splitlines():
+                info_line = info_line.strip()
+                if info_line.startswith("Name:"):
+                    device["name"] = info_line.split(":", 1)[1].strip()
+                elif info_line.startswith("Alias:") and not device["name"]:
+                    device["name"] = info_line.split(":", 1)[1].strip()
+                elif info_line.startswith("Paired:"):
+                    device["paired"] = _parse_bt_bool(info_line.split(":", 1)[1])
+                elif info_line.startswith("Trusted:"):
+                    device["trusted"] = _parse_bt_bool(info_line.split(":", 1)[1])
+                elif info_line.startswith("Connected:"):
+                    device["connected"] = _parse_bt_bool(info_line.split(":", 1)[1])
+                elif info_line.startswith("RSSI:"):
+                    try:
+                        device["rssi"] = int(info_line.split(":", 1)[1].strip())
+                    except ValueError:
+                        device["rssi"] = None
+        status["devices"].append(device)
+
+    return status
+
+
+async def set_bluetooth_settings(settings):
+    logger.info("Writing Bluetooth settings")
+    commands = []
+    if settings.powered is not None:
+        commands.append(f"power {'on' if settings.powered else 'off'}")
+    if settings.pairable is not None:
+        commands.append(f"pairable {'on' if settings.pairable else 'off'}")
+    if settings.discoverable is not None:
+        commands.append(f"discoverable {'on' if settings.discoverable else 'off'}")
+    if not commands:
+        return
+    retval, output = await _bluetoothctl(*commands)
+    if retval != 0:
+        logger.warning(f"Bluetooth settings failed: {output}")
+
+
+async def start_bluetooth():
+    retval, output = await _bluetoothctl("power on")
+    if retval != 0:
+        logger.warning(f"Bluetooth start failed: {output}")
+
+
+async def stop_bluetooth():
+    retval, output = await _bluetoothctl("power off")
+    if retval != 0:
+        logger.warning(f"Bluetooth stop failed: {output}")
+
+
+async def start_bluetooth_scan():
+    retval, output = await _bluetoothctl("scan on")
+    if retval != 0 and "InProgress" not in output:
+        logger.warning(f"Bluetooth scan start failed: {output}")
+
+
+async def stop_bluetooth_scan():
+    retval, output = await _bluetoothctl("scan off")
+    if retval != 0:
+        logger.warning(f"Bluetooth scan stop failed: {output}")
+
+
+async def bluetooth_device_action(mac, action):
+    if not re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", mac):
+        logger.warning(f"Invalid Bluetooth MAC: {mac}")
+        return False
+    allowed = {
+        "pair": f"pair {mac}",
+        "trust": f"trust {mac}",
+        "connect": f"connect {mac}",
+        "disconnect": f"disconnect {mac}",
+        "remove": f"remove {mac}",
+        "cancel-pairing": f"cancel-pairing {mac}",
+    }
+    if action not in allowed:
+        return False
+    retval, output = await _bluetoothctl(allowed[action])
+    if retval != 0:
+        logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
+    return retval == 0
 
 async def write_license(type_id, expiration_date):
     #TODO write, needs the signed string
@@ -265,3 +429,95 @@ async def read_modbus() -> int:
         logger.info(f"Modbus address: {addr}")
         return addr
     return -1
+
+
+# Update Status Management
+UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
+UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
+
+
+def _read_update_config():
+    """Read auto_update flag and update_server from config file"""
+    auto_update = False
+    update_server = ""
+    if os.path.isfile(UPDATE_CONFIG_FILE):
+        try:
+            with open(UPDATE_CONFIG_FILE, 'r') as f:
+                lines = f.readlines()
+                if len(lines) > 0 and lines[0].strip() == "true":
+                    auto_update = True
+                if len(lines) > 1:
+                    update_server = lines[1].strip()
+        except Exception as e:
+            logger.error(f"Error reading update config: {e}")
+    return auto_update, update_server
+
+
+def _write_update_config(auto_update, server):
+    """Write auto_update flag and update_server to config file"""
+    try:
+        os.makedirs(os.path.dirname(UPDATE_CONFIG_FILE), exist_ok=True)
+        with open(UPDATE_CONFIG_FILE, 'w') as f:
+            f.write("true\n" if auto_update else "false\n")
+            f.write(server + "\n")
+        logger.info(f"Update config written: auto_update={auto_update}, server={server}")
+    except Exception as e:
+        logger.error(f"Error writing update config: {e}")
+
+
+def _is_update_pending():
+    """Check if update is pending"""
+    return os.path.isfile(UPDATE_STATUS_FILE)
+
+
+def _set_update_pending(pending):
+    """Mark update as pending or clear pending status"""
+    try:
+        os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
+        if pending:
+            with open(UPDATE_STATUS_FILE, 'w') as f:
+                f.write("true")
+            logger.info("Update marked as pending")
+        else:
+            if os.path.isfile(UPDATE_STATUS_FILE):
+                os.remove(UPDATE_STATUS_FILE)
+            logger.info("Update pending status cleared")
+    except Exception as e:
+        logger.error(f"Error setting update pending status: {e}")
+
+
+def get_update_status():
+    """Get current update status"""
+    is_pending = _is_update_pending()
+    auto_update, update_server = _read_update_config()
+    logger.info(f"Update status: pending={is_pending}, auto_update={auto_update}, server={update_server}")
+    return {
+        "is_pending": is_pending,
+        "auto_update": auto_update,
+        "update_server": update_server
+    }
+
+
+def set_update_settings(auto_update, server):
+    """Set auto-update flag and server address"""
+    _write_update_config(auto_update, server)
+    logger.info(f"Update settings saved: auto_update={auto_update}")
+
+
+def confirm_update(confirm):
+    """Confirm or reject pending update"""
+    if confirm:
+        # Execute the update
+        logger.info("User confirmed update, executing...")
+        utils.schedule_run(5, "/usr/bin/usb_autorun.sh", "run", SWUPDATE_FILE)
+    else:
+        # Reject update
+        logger.info("User rejected update")
+        if os.path.isfile(SWUPDATE_FILE):
+            try:
+                os.remove(SWUPDATE_FILE)
+                logger.info(f"Removed pending update file: {SWUPDATE_FILE}")
+            except Exception as e:
+                logger.error(f"Error removing update file: {e}")
+    
+    _set_update_pending(False)

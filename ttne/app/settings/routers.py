@@ -138,6 +138,37 @@ async def post_start_modbus():
 async def post_stop_modbus():
     await functions.stop_modbus()
 
+@router.get("/bluetooth")
+async def get_bluetooth() -> models.BluetoothStatus:
+    status = await functions.get_bluetooth_status()
+    return models.BluetoothStatus(**status)
+
+@router.put("/bluetooth")
+async def put_bluetooth(data: models.BluetoothSettings):
+    await functions.set_bluetooth_settings(data)
+
+@router.post("/start-bluetooth")
+async def post_start_bluetooth():
+    await functions.start_bluetooth()
+
+@router.post("/stop-bluetooth")
+async def post_stop_bluetooth():
+    await functions.stop_bluetooth()
+
+@router.post("/bluetooth/scan/start")
+async def post_start_bluetooth_scan():
+    await functions.start_bluetooth_scan()
+
+@router.post("/bluetooth/scan/stop")
+async def post_stop_bluetooth_scan():
+    await functions.stop_bluetooth_scan()
+
+@router.post("/bluetooth/devices/{mac}/{action}")
+async def post_bluetooth_device_action(mac: str, action: str, response: Response):
+    success = await functions.bluetooth_device_action(mac, action)
+    if not success:
+        response.status_code = 400
+
 @router.put("/modbus")
 async def put_modbus_addr(data: models.Modbus):
     await functions.write_modbus(data.addr)
@@ -150,3 +181,19 @@ async def put_modbus_addr(data: models.Modbus):
 async def get_modbus_addr() -> models.Modbus:
     addr = await functions.read_modbus()
     return models.Modbus(addr=addr)
+
+
+@router.get("/update-status")
+async def get_update_status() -> models.UpdateStatus:
+    status = functions.get_update_status()
+    return models.UpdateStatus(**status)
+
+
+@router.put("/update-settings")
+async def put_update_settings(data: models.UpdateSettings):
+    functions.set_update_settings(data.auto_update, data.update_server)
+
+
+@router.post("/update-confirm")
+async def post_update_confirm(data: models.UpdateConfirm):
+    functions.confirm_update(data.confirm)
