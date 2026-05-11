@@ -117,6 +117,8 @@ def update(update_file):
     except Exception as e:
         logger.warning(f"Could not remove upload directory: {e}")
 
+    return {"is_pending": auto_update}
+
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
     copy_fd = await asyncio.to_thread(open, CA_CERT_FILE, "wb")
@@ -514,18 +516,19 @@ async def read_modbus() -> int:
 # Update Status Management
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
+DEFAULT_AUTO_UPDATE = True
 
 
 def _read_update_config():
     """Read auto_update flag and update_server from config file"""
-    auto_update = False
+    auto_update = DEFAULT_AUTO_UPDATE
     update_server = ""
     if os.path.isfile(UPDATE_CONFIG_FILE):
         try:
             with open(UPDATE_CONFIG_FILE, 'r') as f:
                 lines = f.readlines()
-                if len(lines) > 0 and lines[0].strip() == "true":
-                    auto_update = True
+                if len(lines) > 0:
+                    auto_update = lines[0].strip().lower() == "true"
                 if len(lines) > 1:
                     update_server = lines[1].strip()
         except Exception as e:
@@ -589,7 +592,7 @@ def confirm_update(confirm):
     if confirm:
         # Execute the update
         logger.info("User confirmed update, executing...")
-        utils.schedule_run(5, "/usr/bin/usb_autorun.sh", "run", SWUPDATE_FILE)
+        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + SWUPDATE_FILE))
     else:
         # Reject update
         logger.info("User rejected update")

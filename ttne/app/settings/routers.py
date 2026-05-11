@@ -39,7 +39,7 @@ async def put_snmp_nms(data: models.SnmpNms):
 
 @router.post("/swupdate")
 async def post_swupdate(data: models.SWUpdate):
-    functions.update(data.filename)
+    return functions.update(data.filename)
 
 @router.post("/system-reboot")
 async def post_system_reboot():
