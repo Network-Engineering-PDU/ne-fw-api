@@ -29,6 +29,9 @@ MODBUS_FILE = "/home/root/.ne/modbus_addr"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
+BT_AGENT_PROCESS = None
+BT_AGENT_PENDING = None
+BT_AGENT_LAST_DEVICE = {"mac": "", "name": ""}
 
 
 async def get_mac_address() -> str:
@@ -152,8 +155,67 @@ async def _bluetoothctl(*commands):
     return await utils.shell(f"({cmd}) | bluetoothctl")
 
 
+async def _bt_agent_write(command):
+    global BT_AGENT_PROCESS
+    if BT_AGENT_PROCESS is None or BT_AGENT_PROCESS.returncode is not None:
+        return False
+    BT_AGENT_PROCESS.stdin.write((command + "\n").encode())
+    await BT_AGENT_PROCESS.stdin.drain()
+    return True
+
+
+async def _bt_agent_reader(process):
+    global BT_AGENT_PENDING, BT_AGENT_LAST_DEVICE
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            return
+        text = line.decode(errors="replace").strip()
+        logger.debug(f"bluetoothctl agent: {text}")
+
+        device_match = re.search(r"Device ([0-9A-Fa-f:]{17})(?: (.*))?", text)
+        if device_match:
+            BT_AGENT_LAST_DEVICE = {
+                "mac": device_match.group(1),
+                "name": (device_match.group(2) or "").strip(),
+            }
+
+        request = any(phrase in text for phrase in (
+            "Confirm passkey",
+            "Authorize service",
+            "Accept pairing",
+            "Request confirmation",
+            "Request authorization",
+        ))
+        if request:
+            passkey_match = re.search(r"passkey\s+([0-9]+)", text, re.IGNORECASE)
+            BT_AGENT_PENDING = {
+                "mac": BT_AGENT_LAST_DEVICE["mac"],
+                "name": BT_AGENT_LAST_DEVICE["name"] or "Bluetooth device",
+                "passkey": passkey_match.group(1) if passkey_match else "",
+            }
+
+
+async def ensure_bluetooth_agent():
+    global BT_AGENT_PROCESS
+    if BT_AGENT_PROCESS is not None and BT_AGENT_PROCESS.returncode is None:
+        return
+
+    BT_AGENT_PROCESS = await asyncio.create_subprocess_exec(
+        "bluetoothctl",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    asyncio.create_task(_bt_agent_reader(BT_AGENT_PROCESS))
+    await asyncio.sleep(0.2)
+    await _bt_agent_write("agent KeyboardDisplay")
+    await _bt_agent_write("default-agent")
+
+
 async def get_bluetooth_status():
     logger.info("Reading Bluetooth status")
+    await ensure_bluetooth_agent()
     status = {
         "controller_mac": "",
         "name": "",
@@ -161,6 +223,10 @@ async def get_bluetooth_status():
         "pairable": False,
         "discoverable": False,
         "discovering": False,
+        "pairing_request": BT_AGENT_PENDING is not None,
+        "pairing_mac": BT_AGENT_PENDING["mac"] if BT_AGENT_PENDING else "",
+        "pairing_name": BT_AGENT_PENDING["name"] if BT_AGENT_PENDING else "",
+        "pairing_passkey": BT_AGENT_PENDING["passkey"] if BT_AGENT_PENDING else "",
         "devices": [],
     }
 
@@ -233,6 +299,7 @@ async def get_bluetooth_status():
 
 async def set_bluetooth_settings(settings):
     logger.info("Writing Bluetooth settings")
+    await ensure_bluetooth_agent()
     commands = []
     if settings.powered is not None:
         commands.append(f"power {'on' if settings.powered else 'off'}")
@@ -248,30 +315,35 @@ async def set_bluetooth_settings(settings):
 
 
 async def start_bluetooth():
+    await ensure_bluetooth_agent()
     retval, output = await _bluetoothctl("power on")
     if retval != 0:
         logger.warning(f"Bluetooth start failed: {output}")
 
 
 async def stop_bluetooth():
+    await ensure_bluetooth_agent()
     retval, output = await _bluetoothctl("power off")
     if retval != 0:
         logger.warning(f"Bluetooth stop failed: {output}")
 
 
 async def start_bluetooth_scan():
+    await ensure_bluetooth_agent()
     retval, output = await _bluetoothctl("scan on")
     if retval != 0 and "InProgress" not in output:
         logger.warning(f"Bluetooth scan start failed: {output}")
 
 
 async def stop_bluetooth_scan():
+    await ensure_bluetooth_agent()
     retval, output = await _bluetoothctl("scan off")
     if retval != 0:
         logger.warning(f"Bluetooth scan stop failed: {output}")
 
 
 async def bluetooth_device_action(mac, action):
+    await ensure_bluetooth_agent()
     if not re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", mac):
         logger.warning(f"Invalid Bluetooth MAC: {mac}")
         return False
@@ -289,6 +361,14 @@ async def bluetooth_device_action(mac, action):
     if retval != 0:
         logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
     return retval == 0
+
+
+async def bluetooth_pairing_response(accept):
+    global BT_AGENT_PENDING
+    await ensure_bluetooth_agent()
+    ok = await _bt_agent_write("yes" if accept else "no")
+    BT_AGENT_PENDING = None
+    return ok
 
 async def write_license(type_id, expiration_date):
     #TODO write, needs the signed string

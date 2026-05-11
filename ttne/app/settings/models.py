@@ -91,4 +91,8 @@ class BluetoothStatus(BaseModel):
     pairable: bool = False
     discoverable: bool = False
     discovering: bool = False
+    pairing_request: bool = False
+    pairing_mac: str = ""
+    pairing_name: str = ""
+    pairing_passkey: str = ""
     devices: List[BluetoothDevice] = []

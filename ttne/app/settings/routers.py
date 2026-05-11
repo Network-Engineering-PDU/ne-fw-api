@@ -169,6 +169,15 @@ async def post_bluetooth_device_action(mac: str, action: str, response: Response
     if not success:
         response.status_code = 400
 
+@router.post("/bluetooth/pairing/{action}")
+async def post_bluetooth_pairing_action(action: str, response: Response):
+    if action not in ("accept", "refuse"):
+        response.status_code = 400
+        return
+    success = await functions.bluetooth_pairing_response(action == "accept")
+    if not success:
+        response.status_code = 400
+
 @router.put("/modbus")
 async def put_modbus_addr(data: models.Modbus):
     await functions.write_modbus(data.addr)
