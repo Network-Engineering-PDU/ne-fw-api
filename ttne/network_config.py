@@ -22,7 +22,7 @@ class NetworkConfig():
         self.type = None
         self.ssid = None
         self.psk = None
-        self.eth_interface = "eth0"  # Selected ethernet port: eth0 (ETH-1) or eth1 (ETH-2)
+        self.eth_interface = "eth0"  # Selected ethernet port: eth0 (ETH-2) or eth1 (ETH-1)
         self.reset()
     
     def reset(self):

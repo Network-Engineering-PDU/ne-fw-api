@@ -15,14 +15,14 @@ class NetworkConfigParams(BaseModel):
     dns: Union[str, None] = None
     ssid: Union[str, None] = None
     password: Union[str, None] = None
-    eth_interface: Optional[str] = None  # Ethernet port selection: eth0 (ETH-1) or eth1 (ETH-2)
+    eth_interface: Optional[str] = None  # Ethernet port selection: eth0 (ETH-2) or eth1 (ETH-1)
 
 
 class BaseNetworkConfig(BaseModel):
     type: int
     dhcp: bool
     params: NetworkConfigParams
-    eth_interface: Optional[str] = None  # Ethernet port selection: eth0 (ETH-1) or eth1 (ETH-2)
+    eth_interface: Optional[str] = None  # Ethernet port selection: eth0 (ETH-2) or eth1 (ETH-1)
 
 
 class MacNetworkConfig(BaseNetworkConfig):
