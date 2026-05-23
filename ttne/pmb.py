@@ -67,9 +67,16 @@ class Pmb:
         if resp == None:
             return None
         sw = int(data)
-        self.branch = (sw >> 3) & 0b1
+        # Decode switches according to table:
+        # SW1 -> bit0 : Branch (0 = Main, 1 = Main & Aux)
+        # SW2-SW3 -> bits1-2 : System type (00=1phase,01=2phase,10=3phase w/o N,11=3phase w N)
+        # SW4 -> bit3 : Current input type (1=IMC-HALL/Melexis, 0=Current transformer)
+        self.branch = sw & 0b1
         self.sys_type = (sw >> 1) & 0b11
-        self.curr_type = sw & 0b1
+        # Firmware: SW4==1 means IMC-HALL (Melexis). The project's enum
+        # `CURR_MLX` is defined as 0 and `CURR_TRA` as 1, so map accordingly:
+        curr_bit = (sw >> 3) & 0b1
+        self.curr_type = 0 if curr_bit == 1 else 1
         self._log_switches(self.branch, self.sys_type, self.curr_type)
 
     def _log_switches(self, branch, sys_type, curr_type):
@@ -128,24 +135,31 @@ class Pmb:
         return self.data
 
     def decode_msg(self, msg):
-        msg = msg[1:].split(",")
-        opcode = msg[0]
-        sync_counter = msg[1]
-        msg_data = msg[2]
-        if len(msg_data) == 0 or len(opcode) != 1:
-            return
         try:
+            msg = msg[1:].split(",")
+            if len(msg) < 3:
+                logger.error(f"Invalid PMB message format: insufficient fields")
+                return None
+            opcode = msg[0]
+            sync_counter = msg[1]
+            msg_data = msg[2]
+            if len(msg_data) == 0 or len(opcode) != 1:
+                logger.error(f"Invalid PMB message: empty data or invalid opcode")
+                return None
             msg_data = msg_data.split(" ")
+            if len(msg_data) < 5:
+                logger.error(f"Invalid PMB data fields: expected 5, got {len(msg_data)}")
+                return None
             voltage = int(msg_data[0]) / 100
             current = int(msg_data[1]) / 100
             freq = int(msg_data[2]) / 100
             v_ph = int(msg_data[3]) / 100
             i_ph = int(msg_data[4]) / 100
-        except:
-            logger.error(f"Error decoding message: msg_data = {msg_data}")
-            return
-        return {"op":opcode, "sync_count": sync_counter,
-                "v":voltage, "i":current, "f":freq, "v_ph":v_ph, "i_ph":i_ph}
+            return {"op":opcode, "sync_count": sync_counter,
+                    "v":voltage, "i":current, "f":freq, "v_ph":v_ph, "i_ph":i_ph}
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error decoding PMB message: {str(e)}")
+            return None
 
     def pmb_calc(self, voltage, current, phase, last_time):
         calc_res = {}
@@ -162,7 +176,14 @@ class Pmb:
         return calc_res
 
     def update_data(self, d):
-        line_id = Pmb.opcode_to_line[d["op"]]
+        if d is None or "op" not in d:
+            logger.error("Invalid PMB data received")
+            return None
+        try:
+            line_id = Pmb.opcode_to_line[d["op"]]
+        except (KeyError, TypeError):
+            logger.error(f"Invalid PMB opcode: {d.get('op', 'N/A')}")
+            return None
         line_data = self.data[line_id]
         line_data["v"] = d["v"]
         line_data["i"] = d["i"]
@@ -196,13 +217,20 @@ class Pmb:
     async def _read(self):
         while self.measure_flag:
             msg = self.uart.readline(timeout=0.1)
-            if msg == None or msg == "" or msg[0] != ":":
-                if msg != None and msg[0] != ":":
-                    pass # For see PMB log
-                    # logger.debug(f"pmb_log: {msg}")
+            if msg == None or msg == "":
+                continue
+            if msg[0] != ":":
+                pass # For see PMB log
+                # logger.debug(f"pmb_log: {msg}")
                 continue
             decoded_data = self.decode_msg(msg)
+            if decoded_data is None:
+                logger.warning("Failed to decode PMB message")
+                continue
             line_id = self.update_data(decoded_data)
+            if line_id is None:
+                logger.warning("Failed to update PMB data")
+                continue
             # Read all OMs in this line and calc its data
             await asyncio.sleep(0.5) # Wait for OM measure
             om_devices = self.pdu.get_om()
