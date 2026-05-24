@@ -32,8 +32,6 @@ START_TIME = time.time()
 BT_AGENT_PROCESS = None
 BT_AGENT_PENDING = None
 BT_AGENT_LAST_DEVICE = {"mac": "", "name": ""}
-BT_SCAN_TASK = None
-BT_SEEN_DEVICES = set()
 
 
 async def get_mac_address() -> str:
@@ -334,66 +332,16 @@ async def stop_bluetooth():
 
 async def start_bluetooth_scan():
     await ensure_bluetooth_agent()
-    global BT_SCAN_TASK, BT_SEEN_DEVICES
     retval, output = await _bluetoothctl("scan on")
     if retval != 0 and "InProgress" not in output:
         logger.warning(f"Bluetooth scan start failed: {output}")
-    else:
-        # start background watcher task to auto-register discovered devices
-        if BT_SCAN_TASK is None or BT_SCAN_TASK.done():
-            BT_SEEN_DEVICES = set()
-            BT_SCAN_TASK = asyncio.create_task(_bluetooth_scan_watcher())
 
 
 async def stop_bluetooth_scan():
     await ensure_bluetooth_agent()
-    global BT_SCAN_TASK, BT_SEEN_DEVICES
     retval, output = await _bluetoothctl("scan off")
     if retval != 0:
         logger.warning(f"Bluetooth scan stop failed: {output}")
-    # stop background watcher
-    if BT_SCAN_TASK is not None and not BT_SCAN_TASK.done():
-        BT_SCAN_TASK.cancel()
-        try:
-            await BT_SCAN_TASK
-        except asyncio.CancelledError:
-            pass
-    BT_SCAN_TASK = None
-    BT_SEEN_DEVICES = set()
-
-
-async def _bluetooth_scan_watcher(poll_interval: int = 3):
-    """Background task: poll `bluetoothctl devices` and POST new MACs to
-    the Django endpoint `/api/sensors-new/` so the sensor list is populated.
-    """
-    await ensure_bluetooth_agent()
-    url = "http://localhost:80/api/sensors-new/"
-    while True:
-        try:
-            retval, output = await _bluetoothctl("devices")
-            if retval == 0 and output:
-                for line in output.splitlines():
-                    line = line.strip()
-                    if not line.startswith("Device "):
-                        continue
-                    parts = line.split(" ", 2)
-                    if len(parts) < 2:
-                        continue
-                    mac = parts[1]
-                    if mac in BT_SEEN_DEVICES:
-                        continue
-                    BT_SEEN_DEVICES.add(mac)
-                    # POST to Django sensors-new endpoint
-                    payload = f"{{\"mac_address\": \"{mac}\"}}"
-                    cmd = f"curl -s -X POST {url} -H 'Content-Type: application/json' -d '{payload}'"
-                    retval2, out2 = await utils.shell(cmd)
-                    logger.info(f"Posted new bluetooth device {mac} to sensors-new (ret={retval2})")
-        except asyncio.CancelledError:
-            logger.info("Bluetooth scan watcher cancelled")
-            return
-        except Exception as e:
-            logger.exception(f"Error in bluetooth scan watcher: {e}")
-        await asyncio.sleep(poll_interval)
 
 
 async def bluetooth_device_action(mac, action):
