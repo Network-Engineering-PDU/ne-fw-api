@@ -332,16 +332,14 @@ async def stop_bluetooth():
 
 async def start_bluetooth_scan():
     await ensure_bluetooth_agent()
-    retval, output = await _bluetoothctl("scan on")
-    if retval != 0 and "InProgress" not in output:
-        logger.warning(f"Bluetooth scan start failed: {output}")
+    if not await _bt_agent_write("scan on"):
+        logger.warning("Bluetooth scan start failed: unable to write scan command")
 
 
 async def stop_bluetooth_scan():
     await ensure_bluetooth_agent()
-    retval, output = await _bluetoothctl("scan off")
-    if retval != 0:
-        logger.warning(f"Bluetooth scan stop failed: {output}")
+    if not await _bt_agent_write("scan off"):
+        logger.warning("Bluetooth scan stop failed: unable to write scan command")
 
 
 async def bluetooth_device_action(mac, action):
