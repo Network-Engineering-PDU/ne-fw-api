@@ -342,24 +342,32 @@ async def stop_bluetooth_scan():
         logger.warning("Bluetooth scan stop failed: unable to write scan command")
 
 
+def _normalize_mac(mac: str) -> str | None:
+    normalized = mac.strip().replace('-', ':').upper()
+    if re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", normalized):
+        return normalized
+    return None
+
+
 async def bluetooth_device_action(mac, action):
     await ensure_bluetooth_agent()
-    if not re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", mac):
+    normalized_mac = _normalize_mac(mac)
+    if normalized_mac is None:
         logger.warning(f"Invalid Bluetooth MAC: {mac}")
         return False
     allowed = {
-        "pair": f"pair {mac}",
-        "trust": f"trust {mac}",
-        "connect": f"connect {mac}",
-        "disconnect": f"disconnect {mac}",
-        "remove": f"remove {mac}",
-        "cancel-pairing": f"cancel-pairing {mac}",
+        "pair": f"pair {normalized_mac}",
+        "trust": f"trust {normalized_mac}",
+        "connect": f"connect {normalized_mac}",
+        "disconnect": f"disconnect {normalized_mac}",
+        "remove": f"remove {normalized_mac}",
+        "cancel-pairing": f"cancel-pairing {normalized_mac}",
     }
     if action not in allowed:
         return False
     retval, output = await _bluetoothctl(allowed[action])
     if retval != 0:
-        logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
+        logger.warning(f"Bluetooth {action} failed for {normalized_mac}: {output}")
     return retval == 0
 
 
