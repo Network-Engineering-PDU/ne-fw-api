@@ -357,6 +357,24 @@ async def bluetooth_device_action(mac, action):
     }
     if action not in allowed:
         return False
+    
+    # For connect action, check if device is paired first
+    if action == "connect":
+        # Get device status to check if paired
+        retval, output = await _bluetoothctl(f"info {mac}")
+        if retval == 0 and output:
+            is_paired = any(line.startswith("Paired:") and "yes" in line.lower() 
+                           for line in output.splitlines())
+            # If device is not paired, attempt pairing first
+            if not is_paired:
+                logger.info(f"Device {mac} is not paired, attempting to pair before connect")
+                retval, output = await _bluetoothctl(f"pair {mac}")
+                if retval != 0:
+                    logger.warning(f"Bluetooth pair failed for {mac}: {output}")
+                    return False
+                # Wait a moment for pairing to complete
+                await asyncio.sleep(1)
+    
     retval, output = await _bluetoothctl(allowed[action])
     if retval != 0:
         logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
