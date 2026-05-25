@@ -343,7 +343,6 @@ async def stop_bluetooth_scan():
 
 
 async def bluetooth_device_action(mac, action):
-    global BT_AGENT_PROCESS
     await ensure_bluetooth_agent()
     if not re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", mac):
         logger.warning(f"Invalid Bluetooth MAC: {mac}")
@@ -359,79 +358,89 @@ async def bluetooth_device_action(mac, action):
     if action not in allowed:
         return False
     
-    # For connect action, check if device is paired first
+    # For connect action, ensure device is paired first
     if action == "connect":
-        logger.info(f"Attempting to connect to device {mac}")
-        # Get device status to check if paired
+        logger.info(f"[BT] Connect requested for {mac}")
+        
+        # Check if device is paired
         retval, output = await _bluetoothctl(f"info {mac}")
         if retval == 0 and output:
-            is_paired = any(line.startswith("Paired:") and "yes" in line.lower() 
-                           for line in output.splitlines())
-            is_connected = any(line.startswith("Connected:") and "yes" in line.lower() 
-                              for line in output.splitlines())
+            is_paired = any("Paired: yes" in line for line in output.splitlines())
+            logger.info(f"[BT] Device {mac} paired status: {is_paired}")
             
-            logger.info(f"Device {mac} - Paired: {is_paired}, Connected: {is_connected}")
-            
-            # If device is not paired, attempt pairing first using the agent process
             if not is_paired:
-                logger.info(f"Device {mac} is not paired, initiating pairing through agent")
+                logger.info(f"[BT] Device {mac} not paired - attempting auto-pairing")
                 
-                # Send pair command through agent process for proper passkey handling
-                pair_cmd = f"pair {mac}"
-                ok = await _bt_agent_write(pair_cmd)
+                # First, trust the device to auto-accept pairing
+                logger.info(f"[BT] Trusting device {mac}")
+                retval, output = await _bluetoothctl(f"trust {mac}")
+                if retval != 0:
+                    logger.warning(f"[BT] Failed to trust device {mac}: {output}")
                 
-                if not ok:
-                    logger.warning(f"Failed to send pair command for {mac} through agent")
+                await asyncio.sleep(0.5)
+                
+                # Now attempt pairing with timeout
+                logger.info(f"[BT] Sending pair command for {mac}")
+                retval, output = await _bluetoothctl(f"pair {mac}")
+                
+                if retval != 0:
+                    logger.warning(f"[BT] Pairing command failed for {mac}: {output}")
                     return False
                 
-                logger.info(f"Pair command sent to agent process")
+                logger.info(f"[BT] Pairing command sent, waiting for completion...")
                 
-                # Wait for pairing to complete (with passkey confirmation if needed)
-                # The UI should show a pairing dialog if BT_AGENT_PENDING is set
-                for i in range(20):  # Wait up to 10 seconds
+                # Wait longer for pairing to complete (some devices are slow)
+                # Check status every 500ms for up to 15 seconds
+                pair_timeout = 30  # 30 * 0.5s = 15 seconds max
+                for attempt in range(pair_timeout):
                     await asyncio.sleep(0.5)
                     
                     # Check pairing status
-                    retval, info_output = await _bluetoothctl(f"info {mac}")
-                    if retval == 0 and info_output:
-                        is_paired_now = any(line.startswith("Paired:") and "yes" in line.lower() 
-                                           for line in info_output.splitlines())
+                    retval, output = await _bluetoothctl(f"info {mac}")
+                    if retval == 0 and output:
+                        is_paired_now = any("Paired: yes" in line for line in output.splitlines())
                         if is_paired_now:
-                            logger.info(f"Device {mac} successfully paired")
-                            
-                            # Auto-trust the device for future connections
-                            trust_cmd = f"trust {mac}"
-                            ok = await _bt_agent_write(trust_cmd)
-                            if ok:
-                                logger.info(f"Device {mac} marked as trusted")
+                            logger.info(f"[BT] Device {mac} paired successfully after {(attempt+1)*0.5}s")
                             break
+                    
+                    if attempt % 4 == 0:  # Log every 2 seconds
+                        logger.info(f"[BT] Waiting for pairing... ({(attempt+1)*0.5}s)")
                 else:
-                    logger.warning(f"Pairing timeout for device {mac}")
+                    logger.warning(f"[BT] Pairing timeout - device {mac} not paired after 15s")
                     return False
     
-    # For all actions (pair, connect, etc.), use the agent process if available
-    # This ensures passkey confirmations are handled properly
-    if BT_AGENT_PROCESS and BT_AGENT_PROCESS.returncode is None:
-        logger.info(f"Sending command '{action}' through agent process: {allowed[action]}")
-        ok = await _bt_agent_write(allowed[action])
-        if not ok:
-            logger.warning(f"Failed to send {action} command through agent for {mac}")
-            # Fallback to regular _bluetoothctl if agent write fails
-            retval, output = await _bluetoothctl(allowed[action])
-        else:
-            # Command sent through agent, wait for it to complete
-            await asyncio.sleep(1)
-            logger.info(f"Command '{action}' processed through agent for {mac}")
-            return True
-    else:
-        # Fallback: use regular bluetoothctl subprocess
-        retval, output = await _bluetoothctl(allowed[action])
-        if retval != 0:
-            logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
-            return False
-        logger.info(f"Bluetooth {action} succeeded for {mac}")
-        return True
+    # Execute the action (connect, disconnect, etc.)
+    logger.info(f"[BT] Executing action '{action}' for {mac}")
+    retval, output = await _bluetoothctl(allowed[action])
     
+    if retval != 0:
+        logger.warning(f"[BT] Action '{action}' failed for {mac}")
+        logger.warning(f"[BT] Output: {output}")
+        return False
+    
+    # For connect action, verify the connection was successful
+    if action == "connect":
+        logger.info(f"[BT] Connect command sent, waiting for connection to establish...")
+        
+        # Wait for connection to be established (up to 10 seconds)
+        connect_timeout = 20  # 20 * 0.5s = 10 seconds max
+        for attempt in range(connect_timeout):
+            await asyncio.sleep(0.5)
+            
+            retval, output = await _bluetoothctl(f"info {mac}")
+            if retval == 0 and output:
+                is_connected = any("Connected: yes" in line for line in output.splitlines())
+                if is_connected:
+                    logger.info(f"[BT] Device {mac} connected successfully after {(attempt+1)*0.5}s")
+                    return True
+            
+            if attempt % 4 == 0:  # Log every 2 seconds
+                logger.info(f"[BT] Waiting for connection... ({(attempt+1)*0.5}s)")
+        
+        logger.warning(f"[BT] Connection timeout - device {mac} not connected after 10s")
+        return False
+    
+    logger.info(f"[BT] Action '{action}' completed successfully for {mac}")
     return True
 
 
