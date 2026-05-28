@@ -27,34 +27,12 @@ async def send_cmd(cmd: "ttgateway.command.Command") -> bool:
 # TODO: init gateway? -> now in gwrc, but yocto cannot write there
 async def start_scan() -> bool:
     try:
-        logger.info("Starting sensor discovery process")
-        
-        # BLE Sensor Discovery is running continuously in background
-        # Ensure it's enabled
-        try:
-            # Try to enable ble_discovery through gateway
-            cmd = cmds.GatewayCommand("app", "enable", "ble_discovery")
-            result = await send_cmd(cmd)
-            logger.debug(f"BLE discovery enable result: {result}")
-        except Exception as e:
-            logger.debug(f"Could not explicitly enable BLE discovery: {e}")
-        
-        # For backward compatibility, also try mesh scan
-        try:
-            cmd = cmds.GatewayStartScan(60, True)
-            result = await send_cmd(cmd)
-            if result.get("success"):
-                logger.info("Mesh scan started successfully")
-                return True
-        except Exception as mesh_error:
-            logger.debug(f"Mesh scan not available (expected for BLE sensors): {mesh_error}")
-        
-        # BLE discovery is running in background, return success
-        logger.info("BLE discovery is active, scan initiated")
-        return True
-        
+        # 1 min timeout and only one node
+        cmd = cmds.GatewayStartScan(60, True)
+        result = await send_cmd(cmd)
+        return result.get("success", False)
     except Exception as e:
-        logger.error(f"Failed to start sensor discovery: {e}", exc_info=True)
+        logger.error(f"Failed to start BLE scan: {e}", exc_info=True)
         raise
 
 async def stop_scan() -> bool:
