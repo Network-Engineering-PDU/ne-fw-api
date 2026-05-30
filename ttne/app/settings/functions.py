@@ -157,36 +157,6 @@ async def _bluetoothctl(*commands):
     return await utils.shell(f"({cmd}) | bluetoothctl")
 
 
-async def _bluetoothctl_interactive(command, timeout_sec=15):
-    """Execute a command in interactive bluetoothctl mode with timeout"""
-    try:
-        # Run bluetoothctl with the command and capture output
-        full_cmd = f"timeout {timeout_sec} bluetoothctl << 'EOF'\n{command}\nquit\nEOF"
-        return await utils.shell(full_cmd)
-    except Exception as e:
-        logger.error(f"Error executing interactive bluetoothctl: {e}")
-        return (1, str(e))
-
-
-async def _gatttool_connect(mac, timeout_sec=10):
-    """Connect using gatttool - works with devices that don't support standard pairing"""
-    try:
-        full_cmd = f"timeout {timeout_sec} gatttool -b {mac} -I << 'EOF'\nconnect\nquit\nEOF"
-        return await utils.shell(full_cmd)
-    except Exception as e:
-        logger.error(f"Error executing gatttool: {e}")
-        return (1, str(e))
-
-
-async def _gatttool_is_connected(mac):
-    """Check if device is connected using gatttool"""
-    try:
-        retval, output = await utils.shell(f"hcitool con | grep -i {mac}")
-        return retval == 0
-    except Exception:
-        return False
-
-
 async def _bt_agent_write(command):
     global BT_AGENT_PROCESS
     if BT_AGENT_PROCESS is None or BT_AGENT_PROCESS.returncode is not None:
@@ -387,58 +357,10 @@ async def bluetooth_device_action(mac, action):
     }
     if action not in allowed:
         return False
-    
-    # For connect action, handle both standard and proprietary devices
-    if action == "connect":
-        logger.info(f"[BT] Connect requested for {mac}")
-        
-        # First, try standard bluetoothctl connect (for devices with standard pairing)
-        logger.info(f"[BT] Attempting standard bluetoothctl connect for {mac}")
-        retval, output = await _bluetoothctl_interactive(allowed[action], 20)
-        
-        if retval == 0:
-            logger.info(f"[BT] Standard connect succeeded for {mac}")
-            return True
-        
-        # If standard connect fails, it might be a proprietary device
-        # Try using gatttool which works without pairing
-        logger.info(f"[BT] Standard connect failed, trying gatttool for proprietary device {mac}")
-        logger.info(f"[BT] Standard connect error: {output}")
-        
-        # Use gatttool to connect (works with random address devices and no pairing)
-        gatttool_retval, gatttool_output = await _gatttool_connect(mac, 10)
-        logger.info(f"[BT] gatttool connect result: {gatttool_retval}")
-        logger.info(f"[BT] gatttool output: {gatttool_output}")
-        
-        if gatttool_retval == 0 or "connect" in gatttool_output.lower():
-            # gatttool succeeded or shows connection
-            logger.info(f"[BT] Device {mac} connected via gatttool (proprietary device)")
-            
-            # Verify connection
-            await asyncio.sleep(1)
-            is_connected = await _gatttool_is_connected(mac)
-            if is_connected:
-                logger.info(f"[BT] Connection verified for {mac}")
-                return True
-        
-        # If both methods fail, return error
-        logger.warning(f"[BT] Failed to connect to {mac} with both standard and proprietary methods")
-        return False
-    
-    # For other actions (pair, disconnect, trust, etc.), use standard bluetoothctl
-    logger.info(f"[BT] Executing action '{action}' for {mac}")
-    
-    if action in ["pair", "disconnect"]:
-        retval, output = await _bluetoothctl_interactive(allowed[action], 15)
-    else:
-        retval, output = await _bluetoothctl(allowed[action])
-    
+    retval, output = await _bluetoothctl(allowed[action])
     if retval != 0:
-        logger.warning(f"[BT] Action '{action}' failed for {mac}: {output}")
-        return False
-    
-    logger.info(f"[BT] Action '{action}' succeeded for {mac}")
-    return True
+        logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
+    return retval == 0
 
 
 async def bluetooth_pairing_response(accept):

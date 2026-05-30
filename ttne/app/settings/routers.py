@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from datetime import datetime as dt
 from typing import List, Union
 
@@ -9,8 +8,6 @@ from ttne.server import PDU
 from ttne.sn_pn_generator import *
 from . import models, functions
 from .. import gateway_helper
-
-logger = logging.getLogger(__name__)
 
 MODULE_NAME = "settings"
 
@@ -100,21 +97,13 @@ async def get_pdu_info() -> models.PduInfo:
 @router.post("/start-scan")
 async def post_start_scan():
 # async def post_start_scan() -> models.StartScanRsp:
-    try:
-        success = await functions.start_scan()
-        return models.StartScanRsp(success=success)
-    except Exception as e:
-        logger.error(f"Error starting scan: {e}", exc_info=True)
-        return models.StartScanRsp(success=False)
+    success = await functions.start_scan()
+    return models.StartScanRsp(success=success)
 
 @router.post("/stop-scan")
 async def post_stop_scan() -> models.StopScanRsp:
-    try:
-        success = await gateway_helper.stop_scan()
-        return models.StopScanRsp(success=success)
-    except Exception as e:
-        logger.error(f"Error stopping scan: {e}", exc_info=True)
-        return models.StopScanRsp(success=False)
+    success = await gateway_helper.stop_scan()
+    return models.StopScanRsp(success=success)
 
 @router.put("/license")
 async def put_license(data: models.License):
