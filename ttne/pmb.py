@@ -9,6 +9,7 @@ from ttne.uart import Uart, UartOpcodes, UartRsp
 from ttne.config import config
 from ttne.version import PMB_VERSION
 from ttne.pic_bootloader import PicBootloader
+from ttne.input_power import normalize_phase_vi
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,10 @@ class Pmb:
             logger.error(f"Error decoding PMB message: {str(e)}")
             return None
 
+    @staticmethod
+    def normalize_phase_vi(ph):
+        return normalize_phase_vi(ph)
+
     def pmb_calc(self, voltage, current, phase, last_time):
         calc_res = {}
         calc_res['p'] = voltage * current * math.cos(math.radians(phase))
@@ -171,9 +176,13 @@ class Pmb:
         if last_time == 0:
             calc_res['e'] = 0
         else:
-            calc_res['e'] = calc_res['p'] * ((current_time - last_time) / 3600) # Wh
+            calc_res['e'] = calc_res['p'] * ((current_time - last_time) / 3600)  # Wh
         calc_res['last_time'] = current_time
         return calc_res
+
+    @staticmethod
+    def positive_energy(energy):
+        return abs(energy) if energy is not None else 0
 
     def update_data(self, d):
         if d is None or "op" not in d:
@@ -192,11 +201,7 @@ class Pmb:
         line_data["i_ph"] = d["i_ph"]
         ph = 0
         if d["i"] != 0:
-            ph = d["v_ph"] - d["i_ph"]
-            if ph > 180.0:
-                ph -= 360.0
-            elif ph < -180.0:
-                ph += 360.0
+            ph = self.normalize_phase_vi(d["v_ph"] - d["i_ph"])
         line_data["ph"] = ph
         last_time = line_data["last_time"]
         calc_res = self.pmb_calc(d["v"], d["i"], ph, last_time)
@@ -206,6 +211,7 @@ class Pmb:
         line_data["s"] = calc_res["s"]
         line_data["pf"] = calc_res["pf"]
         line_data["e"] += calc_res["e"]
+        line_data["e"] = self.positive_energy(line_data["e"])
         logger.debug(f"[{d['op']}/L{line_id}]" \
                 f"{line_data['v']:.02f}V,{line_data['i']:.02f}A," \
                 f"{line_data['f']:.02f}Hz,{line_data['ph']:.02f}deg," \
