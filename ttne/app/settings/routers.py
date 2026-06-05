@@ -88,11 +88,22 @@ async def post_ca_cert(file: bytes = File()):
 async def post_ca_key(file: bytes = File()):
     await functions.ca_key(file)
 
+pdu_info_state = models.PduInfo(
+    outlet_count=len(PDU.get_om()),
+    rated_current=32.0,
+    controller="VAR-SOM-MX7",
+    type="SMART_PDU"
+)
+
 @router.get("/pdu-info")
 async def get_pdu_info() -> models.PduInfo:
-    n_outlets = len(PDU.get_om())
-    return models.PduInfo(outlet_count=n_outlets, rated_current=32.0,
-            controller="VAR-SOM-MX7", type="SMART_PDU")
+    pdu_info_state.outlet_count = len(PDU.get_om())
+    return pdu_info_state
+
+@router.put("/pdu-info")
+async def put_pdu_info(data: models.PduInfoUpdate) -> models.PduInfo:
+    pdu_info_state.rated_current = data.rated_current
+    return pdu_info_state
 
 @router.post("/start-scan")
 async def post_start_scan():

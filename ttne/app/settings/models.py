@@ -35,6 +35,10 @@ class PduInfo(BaseModel):
     type: str
 
 
+class PduInfoUpdate(BaseModel):
+    rated_current: float
+
+
 class StartScanRsp(BaseModel):
     success: bool
 
