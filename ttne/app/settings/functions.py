@@ -139,24 +139,23 @@ def reboot():
 
 def factory_reset():
     logger.info("Factory reset")
-    
-    # Reset network configuration to defaults before cleanup
+    logger.info("Resetting network settings and restoring system defaults before reboot...")
+
     try:
-        import asyncio
-        asyncio.run(nw_functions.reset_network_config())
+        asyncio.create_task(nw_functions.reset_network_config())
     except Exception as e:
-        logger.warning(f"Could not reset network config: {e}")
-    
-    # Reset update config
-    try:
-        if os.path.isfile(UPDATE_CONFIG_FILE):
-            os.remove(UPDATE_CONFIG_FILE)
-    except Exception as e:
-        logger.warning(f"Could not reset update config: {e}")
-    
+        logger.warning(f"Network reset task failed: {e}")
+
     home_dir = os.path.expanduser("~/")
-    utils.schedule_in(5,
-            utils.shell(f"rm -rf {home_dir}/* {home_dir}/.*; reboot"))
+    cleanup_cmd = (
+        f"rm -rf {home_dir}/* {home_dir}/.[!.]* {home_dir}/..?*; "
+        f"mkdir -p {os.path.dirname(UPDATE_CONFIG_FILE)}; "
+        f"printf 'true\\n\\n' > {UPDATE_CONFIG_FILE}; "
+        f"mkdir -p {os.path.dirname(BLUETOOTH_CONFIG_FILE)}; "
+        f"printf 'true\\n' > {BLUETOOTH_CONFIG_FILE}; "
+        "reboot"
+    )
+    utils.schedule_in(5, utils.shell(cleanup_cmd))
 
 async def start_scan():
     logger.info("Start scan")
@@ -529,7 +528,9 @@ async def read_modbus() -> int:
 # Update Status Management
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
-DEFAULT_AUTO_UPDATE = False
+BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
+DEFAULT_AUTO_UPDATE = True
+DEFAULT_BLUETOOTH_POWERED = True
 
 
 def _read_update_config():
@@ -617,3 +618,48 @@ def confirm_update(confirm):
                 logger.error(f"Error removing update file: {e}")
     
     _set_update_pending(False)
+
+
+# Bluetooth Settings Management
+def _read_bluetooth_config():
+    """Read Bluetooth powered setting from config file"""
+    powered = DEFAULT_BLUETOOTH_POWERED
+    if os.path.isfile(BLUETOOTH_CONFIG_FILE):
+        try:
+            with open(BLUETOOTH_CONFIG_FILE, 'r') as f:
+                powered = f.read().strip().lower() == "true"
+        except Exception as e:
+            logger.error(f"Error reading bluetooth config: {e}")
+    return powered
+
+
+def _write_bluetooth_config(powered):
+    """Write Bluetooth powered setting to config file"""
+    try:
+        os.makedirs(os.path.dirname(BLUETOOTH_CONFIG_FILE), exist_ok=True)
+        with open(BLUETOOTH_CONFIG_FILE, 'w') as f:
+            f.write("true\n" if powered else "false\n")
+        logger.info(f"Bluetooth config written: powered={powered}")
+    except Exception as e:
+        logger.error(f"Error writing bluetooth config: {e}")
+
+
+async def init_persistent_settings():
+    """Initialize persistent settings on startup"""
+    logger.info("Initializing persistent settings")
+    
+    # Ensure defaults are written if files don't exist
+    if not os.path.isfile(UPDATE_CONFIG_FILE):
+        _write_update_config(DEFAULT_AUTO_UPDATE, "")
+    
+    if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
+        _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
+    
+    # Apply Bluetooth default if configured
+    try:
+        bt_powered = _read_bluetooth_config()
+        if bt_powered:
+            logger.info("Bluetooth configured to be powered on startup")
+            await start_bluetooth()
+    except Exception as e:
+        logger.warning(f"Could not initialize Bluetooth: {e}")
