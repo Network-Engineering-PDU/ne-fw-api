@@ -134,17 +134,22 @@ class NetworkConfig():
         logger.info(f"Set Ethernet on interface {self.eth_interface}")
         # Remove any existing ethernet connection with the configured name
         retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN} || true")
+        ifname = self.eth_interface if self.eth_interface else "*"
 
         if self.is_static():
-            # Create a single connection that applies to any ethernet interface
-            # so that eth0 and eth1 share the same saved static configuration.
             iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
+            dns_value = self.dns1
+            if self.dns2:
+                dns_value = f"{self.dns1},{self.dns2}"
             retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{self.dns1},{self.dns2}'"
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '{ifname}' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes"
             )
-            # Try to bring the connection up; NetworkManager will apply it to the
-            # active ethernet interface (eth0 or eth1).
-            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} || true")
+            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{ifname}' || true")
+        else:
+            retval, output = await utils.shell(
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '{ifname}' ipv4.method auto connection.autoconnect yes"
+            )
+            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{ifname}' || true")
 
     async def save(self):
         if self.is_ethernet():
