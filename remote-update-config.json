@@ -1,0 +1,20 @@
+{
+  "google_drive_folder_id": "1XBRIDeRGnsFbh7YCLJOJuZdlNScbyllx",
+  "service_account_path": "/etc/pdu_remote_update/service_account.json",
+  "metadata_filename": "metadata.json",
+  "poll_interval_seconds": 3600,
+  "download_timeout_seconds": 300,
+  "download_dir": "/var/lib/pdu_update/download",
+  "staging_dir": "/var/lib/pdu_update/staging",
+  "state_file": "/var/lib/pdu_update/state.json",
+  "install_command": ["/usr/bin/swupdate", "-H", "imx7-var-som:1.0", "-i"],
+  "reboot_command": ["/sbin/reboot"],
+  "ab_partition": false,
+  "slot_a_device": "/dev/mmcblk0p2",
+  "slot_b_device": "/dev/mmcblk0p3",
+  "active_slot_envvar": "rootfs_slot",
+  "boot_verify_timeout_seconds": 300,
+  "rollback_enabled": true,
+  "log_file": "/var/log/pdu_remote_update.log",
+  "metadata_url": ""
+}

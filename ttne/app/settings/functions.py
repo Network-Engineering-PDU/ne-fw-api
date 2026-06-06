@@ -528,6 +528,9 @@ async def read_modbus() -> int:
 # Update Status Management
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
+REMOTE_UPDATE_DIR = "/var/lib/pdu_update"
+REMOTE_PENDING_FILE = os.path.join(REMOTE_UPDATE_DIR, "pending_fw.bin")
+REMOTE_PENDING_METADATA = os.path.join(REMOTE_UPDATE_DIR, "pending_metadata.json")
 BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
 DEFAULT_AUTO_UPDATE = True
 DEFAULT_BLUETOOTH_POWERED = True
@@ -563,12 +566,30 @@ def _write_update_config(auto_update, server):
 
 
 def _is_update_pending():
-    """Check if update is pending"""
+    """Check if web/UI update is pending"""
     return os.path.isfile(UPDATE_STATUS_FILE)
 
 
+def _has_remote_update_pending():
+    """Check if remote Drive update is pending"""
+    return os.path.isfile(REMOTE_PENDING_FILE)
+
+
+def _remove_remote_update_pending():
+    """Remove remote pending update artifacts"""
+    try:
+        if os.path.isfile(REMOTE_PENDING_FILE):
+            os.remove(REMOTE_PENDING_FILE)
+            logger.info("Removed remote pending firmware file")
+        if os.path.isfile(REMOTE_PENDING_METADATA):
+            os.remove(REMOTE_PENDING_METADATA)
+            logger.info("Removed remote pending metadata file")
+    except Exception as e:
+        logger.error(f"Error removing remote pending update: {e}")
+
+
 def _set_update_pending(pending):
-    """Mark update as pending or clear pending status"""
+    """Mark web/UI update as pending or clear pending status"""
     try:
         os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
         if pending:
@@ -585,13 +606,21 @@ def _set_update_pending(pending):
 
 def get_update_status():
     """Get current update status"""
-    is_pending = _is_update_pending()
+    ui_pending = _is_update_pending()
+    remote_pending = _has_remote_update_pending()
     auto_update, update_server = _read_update_config()
-    logger.info(f"Update status: pending={is_pending}, auto_update={auto_update}, server={update_server}")
+    is_pending = ui_pending or remote_pending
+    prompt = remote_pending
+    pending_source = "remote" if remote_pending else ("web" if ui_pending else "")
+    logger.info(
+        f"Update status: pending={is_pending}, auto_update={auto_update}, server={update_server}, prompt={prompt}, source={pending_source}"
+    )
     return {
         "is_pending": is_pending,
         "auto_update": auto_update,
-        "update_server": update_server
+        "update_server": update_server,
+        "prompt": prompt,
+        "pending_source": pending_source,
     }
 
 
@@ -603,14 +632,20 @@ def set_update_settings(auto_update, server):
 
 def confirm_update(confirm):
     """Confirm or reject pending update"""
+    remote_pending = _has_remote_update_pending()
     if confirm:
         # Execute the update
         logger.info("User confirmed update, executing...")
-        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + SWUPDATE_FILE))
+        if remote_pending:
+            utils.schedule_in(5, utils.shell("usb_autorun.sh run " + REMOTE_PENDING_FILE))
+        else:
+            utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
     else:
         # Reject update
         logger.info("User rejected update")
-        if os.path.isfile(SWUPDATE_FILE):
+        if remote_pending:
+            _remove_remote_update_pending()
+        elif os.path.isfile(SWUPDATE_FILE):
             try:
                 os.remove(SWUPDATE_FILE)
                 logger.info(f"Removed pending update file: {SWUPDATE_FILE}")

@@ -1,0 +1,13 @@
+[Unit]
+Description=Remote Drive Firmware Update Boot Verification Service
+After=remote-drive-updater.service
+Requires=remote-drive-updater.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m ttne.app.settings.remote_drive_updater --config /etc/pdu_remote_update/config.json --boot-verify
+
+[Install]
+WantedBy=multi-user.target
