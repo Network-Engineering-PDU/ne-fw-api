@@ -22,19 +22,19 @@ class NetworkConfig():
         self.type = None
         self.ssid = None
         self.psk = None
-        self.eth_interface = "eth0"  # Selected ethernet port: eth0 (ETH-2) or eth1 (ETH-1)
+        self.eth_interface = "eth1"  # Selected ethernet port: eth0 (ETH-2) or eth1 (ETH-1)
         self.reset()
     
     def reset(self):
-        self.ip = ""
-        self.mask = ""
-        self.gateway = ""
-        self.dns1 = ""
+        self.ip = "192.168.1.100"
+        self.mask = "255.255.255.0"
+        self.gateway = "192.168.1.1"
+        self.dns1 = "8.8.8.8"
         self.dns2 = ""
-        self.type = NetworkType.UNCONF
+        self.type = NetworkType.ETH_STATIC
         self.ssid = ""
         self.psk = ""
-        self.eth_interface = "eth0"
+        self.eth_interface = "eth1"   # Selected ethernet port: eth0 (ETH-2) or eth1 (ETH-1)
 
     def is_static(self):
         return NetworkType.is_static(self.type)
