@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime as dt
 from typing import List, Union
 
@@ -8,6 +9,28 @@ from ttne.server import PDU
 from ttne.sn_pn_generator import *
 from . import models, functions
 from .. import gateway_helper
+
+PDU_INFO_FILE = "/home/root/.ne/pdu_info"
+
+def _load_pdu_info() -> float:
+    try:
+        with open(PDU_INFO_FILE, "r") as f:
+            value = f.read().strip()
+            if value:
+                return float(value)
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+    return 32.0
+
+
+def _save_pdu_info(rated_current: float):
+    try:
+        os.makedirs(os.path.dirname(PDU_INFO_FILE), exist_ok=True)
+        with open(PDU_INFO_FILE, "w") as f:
+            f.write(str(rated_current))
+    except OSError:
+        pass
+
 
 MODULE_NAME = "settings"
 
@@ -90,7 +113,7 @@ async def post_ca_key(file: bytes = File()):
 
 pdu_info_state = models.PduInfo(
     outlet_count=len(PDU.get_om()),
-    rated_current=32.0,
+    rated_current=_load_pdu_info(),
     controller="VAR-SOM-MX7",
     type="SMART_PDU"
 )
@@ -103,6 +126,7 @@ async def get_pdu_info() -> models.PduInfo:
 @router.put("/pdu-info")
 async def put_pdu_info(data: models.PduInfoUpdate) -> models.PduInfo:
     pdu_info_state.rated_current = data.rated_current
+    _save_pdu_info(pdu_info_state.rated_current)
     return pdu_info_state
 
 @router.post("/start-scan")
