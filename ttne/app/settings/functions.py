@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 SNMP_NMS_FILE = "/tmp/ne_fw_api_snmp_nms"
-SWUPDATE_FILE = "/home/root/ttfile.bin"
+SWUPDATE_FILE = "/home/root/ttfile.bin"  # legacy; web/OTA use per-channel staging paths
 CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
@@ -94,26 +94,35 @@ async def write_snmp_nms(name, contact, location):
 
 
 def update(update_file):
-    logger.info("Saving update...")
-    os.rename(update_file, SWUPDATE_FILE)
-    logger.info("Update saved")
-    
-    # Check if auto-update is enabled
+    from ttne.update.coordinator import UpdateCoordinator, UpdateSource
+
+    logger.info("Web UI update upload received")
+    ok, reason = UpdateCoordinator.begin(UpdateSource.WEB, "staging")
+    if not ok:
+        logger.warning("Web update rejected: %s", reason)
+        try:
+            os.remove(update_file)
+        except OSError:
+            pass
+        return {"is_pending": False, "error": reason}
+
+    dest = UpdateCoordinator.ensure_staging_dir(UpdateSource.WEB)
+    os.rename(update_file, dest)
+    logger.info("Web update saved to %s", dest)
+
     auto_update, _ = _read_update_config()
-    
+
     if auto_update:
-        # Mark update as pending and wait for confirmation from PDU display
+        UpdateCoordinator.set_phase("pending_confirm", firmware_path=dest)
         _set_update_pending(True)
-        logger.info("Update marked as pending, waiting for user confirmation from PDU")
+        logger.info("Web update pending confirmation on PDU display")
     else:
-        # Auto-update disabled, execute immediately
-        logger.info("Auto-update disabled, executing update immediately")
-        utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
-    
-    # Clean up upload directory
+        UpdateCoordinator.set_phase("installing", firmware_path=dest)
+        logger.info("Web update installing immediately")
+        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + dest))
+
     try:
         shutil.rmtree("/home/root/.ne/uploads")
-        logger.info("Upload directory removed")
     except Exception as e:
         logger.warning(f"Could not remove upload directory: {e}")
 
@@ -585,38 +594,100 @@ def _set_update_pending(pending):
 
 def get_update_status():
     """Get current update status"""
+    from ttne.ota import config as ota_config
+    from ttne.ota import state as ota_state
+    from ttne.ota.remote import provider_name
+
     is_pending = _is_update_pending()
     auto_update, update_server = _read_update_config()
-    logger.info(f"Update status: pending={is_pending}, auto_update={auto_update}, server={update_server}")
+    ota_view = ota_state.public_view()
+    ota_cfg = ota_config.load_config()
+    logger.info(
+        "Update status: pending=%s, auto_update=%s, server=%s, ota=%s",
+        is_pending, auto_update, update_server, ota_view.get("status"),
+    )
+    from ttne.update.coordinator import UpdateCoordinator
+
+    channel = UpdateCoordinator.public_status()
     return {
         "is_pending": is_pending,
         "auto_update": auto_update,
-        "update_server": update_server
+        "update_server": update_server,
+        "installed_version": ota_view.get("installed_version", ""),
+        "available_version": ota_view.get("available_version", ""),
+        "last_check_time": ota_view.get("last_check_time", ""),
+        "last_update_time": ota_view.get("last_update_time", ""),
+        "ota_status": ota_view.get("status", "idle"),
+        "last_error": ota_view.get("last_error", ""),
+        "download_progress": ota_view.get("download_progress", 0),
+        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 24)),
+        "ota_enabled": bool(ota_cfg.get("enabled", True)),
+        "ota_provider": provider_name(ota_cfg),
+        "active_update_source": channel.get("active_update_source", ""),
+        "update_phase": channel.get("update_phase", "idle"),
+        "update_busy": channel.get("update_busy", False),
+        "pending_source": UpdateCoordinator.pending_source(),
     }
 
 
-def set_update_settings(auto_update, server):
-    """Set auto-update flag and server address"""
+def set_update_settings(auto_update, server, check_interval_hours=24,
+        ota_enabled=True):
+    """Set auto-update flag, server address, and OTA options."""
+    from ttne.ota import config as ota_config
+
     _write_update_config(auto_update, server)
-    logger.info(f"Update settings saved: auto_update={auto_update}")
+    cfg = ota_config.load_config()
+    cfg["enabled"] = ota_enabled
+    cfg["check_interval_hours"] = 24 if check_interval_hours not in (1, 24) else check_interval_hours
+    ota_config.save_config(cfg)
+    logger.info(
+        "Update settings saved: auto_update=%s, ota_enabled=%s, interval=%sh",
+        auto_update, ota_enabled, cfg["check_interval_hours"],
+    )
+
+
+def run_ota_check_now():
+    from ttne.ota.updater import run_check
+
+    logger.info("Manual OTA check requested")
+    return run_check()
 
 
 def confirm_update(confirm):
-    """Confirm or reject pending update"""
+    """Confirm or reject pending update from web UI or OTA."""
+    from ttne.ota import state as ota_state
+    from ttne.update.coordinator import UpdateCoordinator, UpdateSource
+
+    firmware_path = UpdateCoordinator.pending_firmware_path()
+    source = UpdateCoordinator.pending_source()
+    if not firmware_path:
+        logger.warning("No pending update to confirm")
+        _set_update_pending(False)
+        return
+
     if confirm:
-        # Execute the update
-        logger.info("User confirmed update, executing...")
-        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + SWUPDATE_FILE))
+        logger.info("User confirmed %s update, executing...", source or "unknown")
+        UpdateCoordinator.set_phase("installing", firmware_path=firmware_path)
+        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + firmware_path))
+        if source == UpdateSource.OTA.value:
+            ota_state.update_state(status="pending_reboot")
     else:
-        # Reject update
-        logger.info("User rejected update")
-        if os.path.isfile(SWUPDATE_FILE):
+        logger.info("User rejected %s update", source or "unknown")
+        if os.path.isfile(firmware_path):
             try:
-                os.remove(SWUPDATE_FILE)
-                logger.info(f"Removed pending update file: {SWUPDATE_FILE}")
+                os.remove(firmware_path)
             except Exception as e:
                 logger.error(f"Error removing update file: {e}")
-    
+        if source == UpdateSource.OTA.value:
+            pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
+            if os.path.isfile(pending_file):
+                os.remove(pending_file)
+            ota_state.set_status("idle")
+        if source:
+            UpdateCoordinator.end(UpdateSource(source), success=False)
+        else:
+            UpdateCoordinator.clear_session()
+
     _set_update_pending(False)
 
 

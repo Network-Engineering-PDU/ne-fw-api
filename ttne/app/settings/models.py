@@ -62,11 +62,27 @@ class UpdateStatus(BaseModel):
     is_pending: bool = False
     auto_update: bool = False
     update_server: str = ""
+    installed_version: str = Config.VERSION
+    available_version: str = ""
+    last_check_time: str = ""
+    last_update_time: str = ""
+    ota_status: str = "idle"
+    last_error: str = ""
+    download_progress: int = 0
+    check_interval_hours: int = 24
+    ota_enabled: bool = True
+    ota_provider: str = "github_repo"
+    active_update_source: str = ""
+    update_phase: str = "idle"
+    update_busy: bool = False
+    pending_source: str = ""
 
 
 class UpdateSettings(BaseModel):
     auto_update: bool
     update_server: str
+    check_interval_hours: int = 24
+    ota_enabled: bool = True
 
 
 class UpdateConfirm(BaseModel):

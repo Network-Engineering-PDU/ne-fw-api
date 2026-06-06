@@ -61,8 +61,11 @@ async def put_snmp_nms(data: models.SnmpNms):
     await functions.write_snmp_nms(data.system_name, data.system_contact, data.system_location)
 
 @router.post("/swupdate")
-async def post_swupdate(data: models.SWUpdate):
-    return functions.update(data.filename)
+async def post_swupdate(data: models.SWUpdate, response: Response):
+    result = functions.update(data.filename)
+    if result.get("error"):
+        response.status_code = 409
+    return result
 
 @router.post("/system-reboot")
 async def post_system_reboot():
@@ -235,9 +238,19 @@ async def get_update_status() -> models.UpdateStatus:
 
 @router.put("/update-settings")
 async def put_update_settings(data: models.UpdateSettings):
-    functions.set_update_settings(data.auto_update, data.update_server)
+    functions.set_update_settings(
+        data.auto_update,
+        data.update_server,
+        data.check_interval_hours,
+        data.ota_enabled,
+    )
 
 
 @router.post("/update-confirm")
 async def post_update_confirm(data: models.UpdateConfirm):
     functions.confirm_update(data.confirm)
+
+
+@router.post("/ota-check-now")
+async def post_ota_check_now():
+    return functions.run_ota_check_now()
