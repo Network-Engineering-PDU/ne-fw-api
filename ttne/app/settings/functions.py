@@ -139,6 +139,21 @@ def reboot():
 
 def factory_reset():
     logger.info("Factory reset")
+    
+    # Reset network configuration to defaults before cleanup
+    try:
+        import asyncio
+        asyncio.run(nw_functions.reset_network_config())
+    except Exception as e:
+        logger.warning(f"Could not reset network config: {e}")
+    
+    # Reset update config
+    try:
+        if os.path.isfile(UPDATE_CONFIG_FILE):
+            os.remove(UPDATE_CONFIG_FILE)
+    except Exception as e:
+        logger.warning(f"Could not reset update config: {e}")
+    
     home_dir = os.path.expanduser("~/")
     utils.schedule_in(5,
             utils.shell(f"rm -rf {home_dir}/* {home_dir}/.*; reboot"))

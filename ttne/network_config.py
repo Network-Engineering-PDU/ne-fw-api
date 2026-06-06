@@ -167,3 +167,5 @@ class NetworkConfig():
         if retval != 0:
             logger.warning("Can not delete WiFi connection (not exist?)")
         self.reset()
+        # Save the default static configuration
+        await self.save()
