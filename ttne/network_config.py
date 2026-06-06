@@ -105,9 +105,13 @@ class NetworkConfig():
                 await self._get_ip_from_if(iface)
                 return
 
-        # No configured connection exists; keep the default static network settings.
-        logger.info("No active network connection found; using default static network settings")
-        return
+        # In other cases the connection is dhcp
+        self.type = NetworkType.ETH_DHCP
+        iface = await self._get_active_eth_if()
+        if iface is not None:
+            self.eth_interface = iface  # Store which interface is being used for DHCP
+            await self._get_ip_from_if(iface)
+            return
 
     async def get_wifi_ssid(self):
         retval, output = await utils.shell(f"nmcli -t -f 802-11-wireless.ssid con show {self.WIFI_CONN}")
@@ -163,4 +167,3 @@ class NetworkConfig():
         if retval != 0:
             logger.warning("Can not delete WiFi connection (not exist?)")
         self.reset()
-        await self.save()

@@ -31,10 +31,6 @@ setuptools.setup(
         "packaging==21.3", # No sé como va lo de las versiones
         "pyserial==3.5", # No sé como va lo de las versiones
         "smbus2==0.3.0", # No sé como va lo de las versiones
-        "google-api-python-client==2.95.0",
-        "google-auth==2.22.0",
-        "google-auth-httplib2==0.1.0",
-        "google-auth-oauthlib==1.0.0",
     ],
     entry_points={
         "console_scripts": {

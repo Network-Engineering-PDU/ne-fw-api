@@ -62,8 +62,6 @@ class UpdateStatus(BaseModel):
     is_pending: bool = False
     auto_update: bool = False
     update_server: str = ""
-    prompt: bool = False
-    pending_source: str = ""
 
 
 class UpdateSettings(BaseModel):

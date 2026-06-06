@@ -139,23 +139,9 @@ def reboot():
 
 def factory_reset():
     logger.info("Factory reset")
-    logger.info("Resetting network settings and restoring system defaults before reboot...")
-
-    try:
-        asyncio.create_task(nw_functions.reset_network_config())
-    except Exception as e:
-        logger.warning(f"Network reset task failed: {e}")
-
     home_dir = os.path.expanduser("~/")
-    cleanup_cmd = (
-        f"rm -rf {home_dir}/* {home_dir}/.[!.]* {home_dir}/..?*; "
-        f"mkdir -p {os.path.dirname(UPDATE_CONFIG_FILE)}; "
-        f"printf 'true\\n\\n' > {UPDATE_CONFIG_FILE}; "
-        f"mkdir -p {os.path.dirname(BLUETOOTH_CONFIG_FILE)}; "
-        f"printf 'true\\n' > {BLUETOOTH_CONFIG_FILE}; "
-        "reboot"
-    )
-    utils.schedule_in(5, utils.shell(cleanup_cmd))
+    utils.schedule_in(5,
+            utils.shell(f"rm -rf {home_dir}/* {home_dir}/.*; reboot"))
 
 async def start_scan():
     logger.info("Start scan")
@@ -528,12 +514,7 @@ async def read_modbus() -> int:
 # Update Status Management
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
-REMOTE_UPDATE_DIR = "/var/lib/pdu_update"
-REMOTE_PENDING_FILE = os.path.join(REMOTE_UPDATE_DIR, "pending_fw.bin")
-REMOTE_PENDING_METADATA = os.path.join(REMOTE_UPDATE_DIR, "pending_metadata.json")
-BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
-DEFAULT_AUTO_UPDATE = True
-DEFAULT_BLUETOOTH_POWERED = True
+DEFAULT_AUTO_UPDATE = False
 
 
 def _read_update_config():
@@ -566,30 +547,12 @@ def _write_update_config(auto_update, server):
 
 
 def _is_update_pending():
-    """Check if web/UI update is pending"""
+    """Check if update is pending"""
     return os.path.isfile(UPDATE_STATUS_FILE)
 
 
-def _has_remote_update_pending():
-    """Check if remote Drive update is pending"""
-    return os.path.isfile(REMOTE_PENDING_FILE)
-
-
-def _remove_remote_update_pending():
-    """Remove remote pending update artifacts"""
-    try:
-        if os.path.isfile(REMOTE_PENDING_FILE):
-            os.remove(REMOTE_PENDING_FILE)
-            logger.info("Removed remote pending firmware file")
-        if os.path.isfile(REMOTE_PENDING_METADATA):
-            os.remove(REMOTE_PENDING_METADATA)
-            logger.info("Removed remote pending metadata file")
-    except Exception as e:
-        logger.error(f"Error removing remote pending update: {e}")
-
-
 def _set_update_pending(pending):
-    """Mark web/UI update as pending or clear pending status"""
+    """Mark update as pending or clear pending status"""
     try:
         os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
         if pending:
@@ -606,21 +569,13 @@ def _set_update_pending(pending):
 
 def get_update_status():
     """Get current update status"""
-    ui_pending = _is_update_pending()
-    remote_pending = _has_remote_update_pending()
+    is_pending = _is_update_pending()
     auto_update, update_server = _read_update_config()
-    is_pending = ui_pending or remote_pending
-    prompt = remote_pending
-    pending_source = "remote" if remote_pending else ("web" if ui_pending else "")
-    logger.info(
-        f"Update status: pending={is_pending}, auto_update={auto_update}, server={update_server}, prompt={prompt}, source={pending_source}"
-    )
+    logger.info(f"Update status: pending={is_pending}, auto_update={auto_update}, server={update_server}")
     return {
         "is_pending": is_pending,
         "auto_update": auto_update,
-        "update_server": update_server,
-        "prompt": prompt,
-        "pending_source": pending_source,
+        "update_server": update_server
     }
 
 
@@ -632,20 +587,14 @@ def set_update_settings(auto_update, server):
 
 def confirm_update(confirm):
     """Confirm or reject pending update"""
-    remote_pending = _has_remote_update_pending()
     if confirm:
         # Execute the update
         logger.info("User confirmed update, executing...")
-        if remote_pending:
-            utils.schedule_in(5, utils.shell("usb_autorun.sh run " + REMOTE_PENDING_FILE))
-        else:
-            utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
+        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + SWUPDATE_FILE))
     else:
         # Reject update
         logger.info("User rejected update")
-        if remote_pending:
-            _remove_remote_update_pending()
-        elif os.path.isfile(SWUPDATE_FILE):
+        if os.path.isfile(SWUPDATE_FILE):
             try:
                 os.remove(SWUPDATE_FILE)
                 logger.info(f"Removed pending update file: {SWUPDATE_FILE}")
@@ -653,48 +602,3 @@ def confirm_update(confirm):
                 logger.error(f"Error removing update file: {e}")
     
     _set_update_pending(False)
-
-
-# Bluetooth Settings Management
-def _read_bluetooth_config():
-    """Read Bluetooth powered setting from config file"""
-    powered = DEFAULT_BLUETOOTH_POWERED
-    if os.path.isfile(BLUETOOTH_CONFIG_FILE):
-        try:
-            with open(BLUETOOTH_CONFIG_FILE, 'r') as f:
-                powered = f.read().strip().lower() == "true"
-        except Exception as e:
-            logger.error(f"Error reading bluetooth config: {e}")
-    return powered
-
-
-def _write_bluetooth_config(powered):
-    """Write Bluetooth powered setting to config file"""
-    try:
-        os.makedirs(os.path.dirname(BLUETOOTH_CONFIG_FILE), exist_ok=True)
-        with open(BLUETOOTH_CONFIG_FILE, 'w') as f:
-            f.write("true\n" if powered else "false\n")
-        logger.info(f"Bluetooth config written: powered={powered}")
-    except Exception as e:
-        logger.error(f"Error writing bluetooth config: {e}")
-
-
-async def init_persistent_settings():
-    """Initialize persistent settings on startup"""
-    logger.info("Initializing persistent settings")
-    
-    # Ensure defaults are written if files don't exist
-    if not os.path.isfile(UPDATE_CONFIG_FILE):
-        _write_update_config(DEFAULT_AUTO_UPDATE, "")
-    
-    if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
-        _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
-    
-    # Apply Bluetooth default if configured
-    try:
-        bt_powered = _read_bluetooth_config()
-        if bt_powered:
-            logger.info("Bluetooth configured to be powered on startup")
-            await start_bluetooth()
-    except Exception as e:
-        logger.warning(f"Could not initialize Bluetooth: {e}")
