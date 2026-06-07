@@ -40,6 +40,43 @@ class OtaUpdater:
     def _progress(self, percent: int) -> None:
         ota_state.update_state(download_progress=percent)
 
+    def _fetch_remote_metadata(self):
+        """Download and validate remote metadata.json. Returns (client, metadata)."""
+        self.cfg = ota_config.load_config()
+        if not self.cfg.get("enabled", True):
+            return None, None
+
+        config_error = validate_config(self.cfg)
+        if config_error:
+            raise ValueError(config_error)
+
+        can_check, reason = UpdateCoordinator.can_check_ota()
+        if not can_check:
+            raise RuntimeError(reason)
+
+        client = create_client(self.cfg)
+        metadata = client.fetch_metadata(self.cfg["metadata_filename"])
+        self._validate_metadata(metadata)
+        return client, metadata
+
+    def peek_metadata(self) -> Dict[str, Any]:
+        """Fetch remote metadata and record versions without downloading firmware."""
+        try:
+            ota_state.set_status("checking")
+            _, metadata = self._fetch_remote_metadata()
+            if metadata is None:
+                logger.info("OTA disabled in config")
+                return ota_state.public_view()
+
+            remote_version = metadata["firmware_version"]
+            ota_state.mark_check_complete(available_version=remote_version)
+            logger.info("OTA metadata peek: remote version %s", remote_version)
+            return ota_state.public_view()
+        except (RemoteError, ValueError, OSError, RuntimeError) as exc:
+            logger.error("OTA metadata peek failed: %s", exc)
+            ota_state.set_status("failed", str(exc))
+            return ota_state.public_view()
+
     def check_for_update(self) -> Dict[str, Any]:
         self.cfg = ota_config.load_config()
         if not self.cfg.get("enabled", True):
@@ -55,14 +92,16 @@ class OtaUpdater:
         can_check, reason = UpdateCoordinator.can_check_ota()
         if not can_check:
             logger.info("OTA check deferred: %s", reason)
+            ota_state.update_state(last_error=reason)
             return ota_state.public_view()
 
         ota_state.set_status("checking")
         try:
-            client = create_client(self.cfg)
-            metadata = client.fetch_metadata(self.cfg["metadata_filename"])
-            self._validate_metadata(metadata)
-        except (RemoteError, ValueError, OSError) as exc:
+            client, metadata = self._fetch_remote_metadata()
+            if metadata is None:
+                logger.info("OTA disabled in config")
+                return ota_state.public_view()
+        except (RemoteError, ValueError, OSError, RuntimeError) as exc:
             logger.error("OTA metadata check failed: %s", exc)
             ota_state.set_status("failed", str(exc))
             return ota_state.public_view()
@@ -155,3 +194,7 @@ class OtaUpdater:
 
 def run_check() -> Dict[str, Any]:
     return OtaUpdater().check_for_update()
+
+
+def run_peek() -> Dict[str, Any]:
+    return OtaUpdater().peek_metadata()

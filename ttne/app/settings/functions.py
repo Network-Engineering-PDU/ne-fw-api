@@ -592,23 +592,35 @@ def _set_update_pending(pending):
         logger.error(f"Error setting update pending status: {e}")
 
 
-def get_update_status():
+def get_update_status(refresh: bool = False):
     """Get current update status"""
     from ttne.ota import config as ota_config
     from ttne.ota import state as ota_state
     from ttne.ota.remote import provider_name
+    from ttne.ota.updater import run_peek
+    from ttne.update.coordinator import UpdateCoordinator
 
     is_pending = _is_update_pending()
     auto_update, update_server = _read_update_config()
     ota_view = ota_state.public_view()
     ota_cfg = ota_config.load_config()
+    channel = UpdateCoordinator.public_status()
+
+    active_ota_statuses = (
+        "checking", "downloading", "verifying", "installing", "pending_reboot",
+    )
+    should_peek = (
+        ota_cfg.get("enabled", True)
+        and ota_view.get("status") not in active_ota_statuses
+        and not channel.get("update_busy")
+        and (refresh or not ota_view.get("last_check_time"))
+    )
+    if should_peek:
+        ota_view = run_peek()
     logger.info(
         "Update status: pending=%s, auto_update=%s, server=%s, ota=%s",
         is_pending, auto_update, update_server, ota_view.get("status"),
     )
-    from ttne.update.coordinator import UpdateCoordinator
-
-    channel = UpdateCoordinator.public_status()
     return {
         "is_pending": is_pending,
         "auto_update": auto_update,

@@ -231,8 +231,8 @@ async def get_modbus_addr() -> models.Modbus:
 
 
 @router.get("/update-status")
-async def get_update_status() -> models.UpdateStatus:
-    status = functions.get_update_status()
+async def get_update_status(refresh: bool = False) -> models.UpdateStatus:
+    status = functions.get_update_status(refresh=refresh)
     return models.UpdateStatus(**status)
 
 
