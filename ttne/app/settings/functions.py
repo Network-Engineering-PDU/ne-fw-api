@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from ttne import utils
 from ttne.app.network import functions as nw_functions
+from ttne.config import Config
 from ttne.sn_pn_generator import *
 from .. import gateway_helper
 
@@ -76,6 +77,11 @@ def uptime() -> str:
     elapsed_time = time.time() - START_TIME
     # TODO: what if hours > 99? should be: 1284:29; test with start_time -= years=10?
     return time.strftime("%H:%M", time.gmtime(elapsed_time))
+
+
+def get_software_version() -> str:
+    """Return the current software version shown in System Info."""
+    return Config.VERSION
 
 
 async def read_snmp_nms() -> ["str", "str", "str"]:

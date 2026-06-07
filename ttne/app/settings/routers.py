@@ -47,7 +47,14 @@ async def get_system_info() -> models.SystemInfo:
     ip = await functions.get_ip(iface_en)
     uptime = functions.uptime()
     sn, pn = read_snpn()
-    return models.SystemInfo(product_pn=pn, product_sn=sn, lan_mac=lan_mac, ip=ip, uptime=uptime)
+    return models.SystemInfo(
+        product_pn=pn,
+        product_sn=sn,
+        lan_mac=lan_mac,
+        ip=ip,
+        uptime=uptime,
+        sw_version=functions.get_software_version(),
+    )
 
 @router.get("/snmp-nms")
 async def get_snmp_nms() -> models.SnmpNms:

@@ -106,8 +106,7 @@ class OtaUpdater:
             ota_state.set_status("failed", str(exc))
             return ota_state.public_view()
 
-        local = ota_state.load_state()
-        installed = local.get("installed_version", Config.VERSION)
+        installed = settings_functions.get_software_version()
         remote_version = metadata["firmware_version"]
         ota_state.mark_check_complete(available_version=remote_version)
 
