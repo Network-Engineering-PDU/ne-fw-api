@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
+MEDIA_BASE = "https://media.githubusercontent.com/media"
+LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+FIRMWARE_DOWNLOAD_TIMEOUT = 3600
 
 
 class GitHubError(Exception):
@@ -55,6 +58,20 @@ class GitHubClient:
             return f"{RAW_BASE}/{'/'.join(parts)}/{self.path}/{quote(filename)}"
         return f"{RAW_BASE}/{'/'.join(parts)}/{quote(filename)}"
 
+    def _media_file_url(self, filename: str) -> str:
+        parts = [self.owner, self.repo, self.ref]
+        if self.path:
+            return f"{MEDIA_BASE}/{'/'.join(parts)}/{self.path}/{quote(filename)}"
+        return f"{MEDIA_BASE}/{'/'.join(parts)}/{quote(filename)}"
+
+    @staticmethod
+    def _is_lfs_pointer(path: str) -> bool:
+        try:
+            with open(path, "rb") as fh:
+                return fh.read(64).startswith(LFS_POINTER_PREFIX)
+        except OSError:
+            return False
+
     def _api_contents_url(self, filename: str) -> str:
         repo_path = filename if not self.path else f"{self.path}/{filename}"
         return (
@@ -64,12 +81,13 @@ class GitHubClient:
 
     def _download_url(self, url: str, destination: str,
             progress_cb: Optional[Callable[[int], None]] = None,
-            headers: Optional[Dict[str, str]] = None) -> None:
+            headers: Optional[Dict[str, str]] = None,
+            timeout: int = 120) -> None:
         with requests.get(
             url,
             headers=headers or self._headers(),
             stream=True,
-            timeout=120,
+            timeout=timeout,
             allow_redirects=True,
         ) as rsp:
             if not rsp.ok:
@@ -87,6 +105,18 @@ class GitHubClient:
                         progress_cb(int(downloaded * 100 / total))
             os.replace(tmp_path, destination)
 
+    def _download_lfs_object(self, filename: str, destination: str,
+            progress_cb: Optional[Callable[[int], None]] = None) -> None:
+        media_url = self._media_file_url(filename)
+        logger.info("Fetching Git LFS object for %s", filename)
+        self._download_url(
+            media_url,
+            destination,
+            progress_cb,
+            headers={"User-Agent": "ttne-ota"},
+            timeout=FIRMWARE_DOWNLOAD_TIMEOUT,
+        )
+
     def _download_repo_file(self, filename: str, destination: str,
             progress_cb: Optional[Callable[[int], None]] = None) -> None:
         token = self._token()
@@ -95,10 +125,17 @@ class GitHubClient:
             self._download_url(
                 url, destination, progress_cb,
                 headers=self._headers(accept="application/vnd.github.raw"),
+                timeout=FIRMWARE_DOWNLOAD_TIMEOUT,
             )
-            return
-        url = self._repo_file_url(filename)
-        self._download_url(url, destination, progress_cb, headers={"User-Agent": "ttne-ota"})
+        else:
+            url = self._repo_file_url(filename)
+            self._download_url(
+                url, destination, progress_cb,
+                headers={"User-Agent": "ttne-ota"},
+                timeout=FIRMWARE_DOWNLOAD_TIMEOUT,
+            )
+        if self._is_lfs_pointer(destination):
+            self._download_lfs_object(filename, destination, progress_cb)
 
     def _fetch_repo_metadata(self, metadata_name: str) -> Dict[str, Any]:
         token = self._token()

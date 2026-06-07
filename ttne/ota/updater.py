@@ -92,7 +92,7 @@ class OtaUpdater:
         can_check, reason = UpdateCoordinator.can_check_ota()
         if not can_check:
             logger.info("OTA check deferred: %s", reason)
-            ota_state.update_state(last_error=reason)
+            ota_state.set_status("idle", reason)
             return ota_state.public_view()
 
         ota_state.set_status("checking")

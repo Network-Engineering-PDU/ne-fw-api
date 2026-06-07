@@ -105,6 +105,22 @@ class UpdateCoordinator:
         return cls._usb_autorun_active() or cls._usb_workdir_active()
 
     @classmethod
+    def reconcile_stale_session(cls) -> bool:
+        """Drop abandoned session state when the installer is no longer running."""
+        session = cls.load_session()
+        phase = session.get("phase", "idle")
+        if phase in ("idle", "", "pending_confirm"):
+            return False
+        if cls.installer_busy():
+            return False
+        logger.warning(
+            "Clearing stale update session (source=%s phase=%s)",
+            session.get("source"), phase,
+        )
+        cls.clear_session()
+        return True
+
+    @classmethod
     def active_source(cls) -> str:
         return cls.load_session().get("source", "")
 
@@ -114,6 +130,7 @@ class UpdateCoordinator:
 
     @classmethod
     def public_status(cls) -> Dict[str, Any]:
+        cls.reconcile_stale_session()
         session = cls.load_session()
         return {
             "active_update_source": session.get("source", ""),
@@ -125,20 +142,15 @@ class UpdateCoordinator:
 
     @classmethod
     def can_check_ota(cls) -> Tuple[bool, str]:
+        """Return whether OTA may fetch remote metadata (not download/install)."""
+        cls.reconcile_stale_session()
         if cls.installer_busy():
             return False, "USB update installer is running"
-        session = cls.load_session()
-        phase = session.get("phase", "idle")
-        if phase == "installing":
-            return False, "another update is installing"
-        if phase == "staging" and session.get("source") in (
-            UpdateSource.WEB.value, UpdateSource.USB.value,
-        ):
-            return False, "another update channel is staging firmware"
         return True, ""
 
     @classmethod
     def can_begin(cls, source: UpdateSource) -> Tuple[bool, str]:
+        cls.reconcile_stale_session()
         if cls.installer_busy():
             return False, "USB update installer is running"
 

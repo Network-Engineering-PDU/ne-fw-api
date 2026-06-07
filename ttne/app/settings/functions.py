@@ -602,9 +602,9 @@ def get_update_status(refresh: bool = False):
 
     is_pending = _is_update_pending()
     auto_update, update_server = _read_update_config()
-    ota_view = ota_state.public_view()
     ota_cfg = ota_config.load_config()
     channel = UpdateCoordinator.public_status()
+    ota_view = ota_state.public_view()
 
     active_ota_statuses = (
         "checking", "downloading", "verifying", "installing", "pending_reboot",
@@ -612,7 +612,6 @@ def get_update_status(refresh: bool = False):
     should_peek = (
         ota_cfg.get("enabled", True)
         and ota_view.get("status") not in active_ota_statuses
-        and not channel.get("update_busy")
         and (refresh or not ota_view.get("last_check_time"))
     )
     if should_peek:
