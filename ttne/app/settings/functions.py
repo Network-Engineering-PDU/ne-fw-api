@@ -612,6 +612,16 @@ def get_update_status(refresh: bool = False):
     channel = UpdateCoordinator.public_status()
     ota_view = ota_state.public_view()
 
+    # Ensure OTA state 'installed_version' matches the System Info software
+    # version source so the UI and OTA logic use the same baseline.
+    try:
+        current_sw = get_software_version()
+        if current_sw and ota_view.get("installed_version") != current_sw:
+            ota_state.update_state(installed_version=current_sw)
+            ota_view = ota_state.public_view()
+    except Exception:
+        logger.exception("Failed to sync installed_version with system-info")
+
     active_ota_statuses = (
         "checking", "downloading", "verifying", "installing", "pending_reboot",
     )
