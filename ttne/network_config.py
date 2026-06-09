@@ -105,8 +105,9 @@ class NetworkConfig():
                 await self._get_ip_from_if(iface)
                 return
 
-        # No configured connection exists; keep the default static network settings.
+        # No configured connection exists; keep the default static network settings and apply defaults.
         logger.info("No active network connection found; using default static network settings")
+        await self.save()
         return
 
     async def get_wifi_ssid(self):
