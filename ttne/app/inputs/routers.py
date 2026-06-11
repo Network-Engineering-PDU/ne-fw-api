@@ -8,7 +8,6 @@ from fastapi import APIRouter, Response
 
 from . import models
 from ttne.server import PDU
-from ttne.input_power import correct_input_measurements
 
 MODULE_NAME = "inputs"
 INPUT_NUMBER = 6
@@ -72,34 +71,15 @@ async def get_data(line_id: int,
     pmb = PDU.get_pmb()
     data = pmb.get_pmb_data()[line_id]
 
-    (
-        voltage,
-        current,
-        active_power,
-        reactive_power,
-        apparent_power,
-        power_factor,
-        phase,
-        energy,
-    ) = correct_input_measurements(
-        data["v"],
-        data["i"],
-        data["ph"],
-        data["p"],
-        data["q"],
-        data["s"],
-        data["pf"],
-        data["e"],
+    input_data = models.InputData(
+        voltage = data["v"],
+        current = data["i"],
+        active_power = data["p"],
+        reactive_power = data["q"],
+        apparent_power = data["s"],
+        power_factor = data["pf"],
+        phase = data["ph"],
+        frequency = data["f"],
+        energy = data["e"],
     )
-
-    return models.InputData(
-        voltage=voltage,
-        current=current,
-        active_power=active_power,
-        reactive_power=reactive_power,
-        apparent_power=apparent_power,
-        power_factor=power_factor,
-        phase=phase,
-        frequency=data["f"],
-        energy=energy,
-    )
+    return input_data

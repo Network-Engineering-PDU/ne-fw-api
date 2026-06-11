@@ -7,13 +7,13 @@ class NetworkType:
 
     @classmethod
     def get_interfaces(cls):
-        return ["wlan0", "eth0", "eth1"]
+        return ["wlan0", "eth0"]
 
     @classmethod
     def from_interface(cls, interface):
         if interface == "wlan0":
             return cls.WIFI_DHCP
-        if interface == "eth0" or interface == "eth1":
+        if interface == "eth0":
             return cls.ETH_DHCP
         return cls.UNCONF
 
@@ -30,23 +30,9 @@ class NetworkType:
         return network_type == cls.ETH_STATIC or network_type == cls.WIFI_STATIC
 
     @classmethod
-    def to_interface(cls, network_type, eth_interface="eth0"):
-        """Return interface name for network type.
-        
-        Args:
-            network_type: Type of network connection
-            eth_interface: Ethernet interface to use (eth0 or eth1). Default: eth0
-        
-        Returns:
-            Interface name (eth0, eth1, wlan0, etc.)
-        """
+    def to_interface(cls, network_type):
         if network_type == cls.ETH_DHCP or network_type == cls.ETH_STATIC:
-            return eth_interface
+            return "eth0"
         if network_type == cls.WIFI_DHCP or network_type == cls.WIFI_STATIC:
             return "wlan0"
         return "unknown_if"
-    
-    @classmethod
-    def get_available_eth_interfaces(cls):
-        """Return list of available Ethernet interfaces to try"""
-        return ["eth0", "eth1"]

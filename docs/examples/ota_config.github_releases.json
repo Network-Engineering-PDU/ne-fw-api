@@ -1,9 +1,0 @@
-{
-  "enabled": true,
-  "provider": "github_releases",
-  "check_interval_hours": 24,
-  "metadata_filename": "metadata.json",
-  "github_owner": "Network-Engineering-PDU",
-  "github_repo": "firmware-update",
-  "github_token_path": "/home/root/.ne/ota/github_token"
-}

@@ -1,7 +1,7 @@
 import os
 
 class Config:
-    VERSION = "0.2.4"
+    VERSION = "0.2.0"
     BOARD_ID = 1
     REV_ID = 1
     TTNE_DIR = os.path.expanduser("~/.ne")

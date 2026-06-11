@@ -1,5 +1,4 @@
 import asyncio
-import os
 from datetime import datetime as dt
 from typing import List, Union
 
@@ -9,28 +8,6 @@ from ttne.server import PDU
 from ttne.sn_pn_generator import *
 from . import models, functions
 from .. import gateway_helper
-
-PDU_INFO_FILE = "/home/root/.ne/pdu_info"
-
-def _load_pdu_info() -> float:
-    try:
-        with open(PDU_INFO_FILE, "r") as f:
-            value = f.read().strip()
-            if value:
-                return float(value)
-    except (FileNotFoundError, OSError, ValueError):
-        pass
-    return 32.0
-
-
-def _save_pdu_info(rated_current: float):
-    try:
-        os.makedirs(os.path.dirname(PDU_INFO_FILE), exist_ok=True)
-        with open(PDU_INFO_FILE, "w") as f:
-            f.write(str(rated_current))
-    except OSError:
-        pass
-
 
 MODULE_NAME = "settings"
 
@@ -47,14 +24,7 @@ async def get_system_info() -> models.SystemInfo:
     ip = await functions.get_ip(iface_en)
     uptime = functions.uptime()
     sn, pn = read_snpn()
-    return models.SystemInfo(
-        product_pn=pn,
-        product_sn=sn,
-        lan_mac=lan_mac,
-        ip=ip,
-        uptime=uptime,
-        sw_version=functions.get_software_version(),
-    )
+    return models.SystemInfo(product_pn=pn, product_sn=sn, lan_mac=lan_mac, ip=ip, uptime=uptime)
 
 @router.get("/snmp-nms")
 async def get_snmp_nms() -> models.SnmpNms:
@@ -68,11 +38,8 @@ async def put_snmp_nms(data: models.SnmpNms):
     await functions.write_snmp_nms(data.system_name, data.system_contact, data.system_location)
 
 @router.post("/swupdate")
-async def post_swupdate(data: models.SWUpdate, response: Response):
-    result = functions.update(data.filename)
-    if result.get("error"):
-        response.status_code = 409
-    return result
+async def post_swupdate(data: models.SWUpdate):
+    functions.update(data.filename)
 
 @router.post("/system-reboot")
 async def post_system_reboot():
@@ -121,23 +88,11 @@ async def post_ca_cert(file: bytes = File()):
 async def post_ca_key(file: bytes = File()):
     await functions.ca_key(file)
 
-pdu_info_state = models.PduInfo(
-    outlet_count=len(PDU.get_om()),
-    rated_current=_load_pdu_info(),
-    controller="VAR-SOM-MX7",
-    type="SMART_PDU"
-)
-
 @router.get("/pdu-info")
 async def get_pdu_info() -> models.PduInfo:
-    pdu_info_state.outlet_count = len(PDU.get_om())
-    return pdu_info_state
-
-@router.put("/pdu-info")
-async def put_pdu_info(data: models.PduInfoUpdate) -> models.PduInfo:
-    pdu_info_state.rated_current = data.rated_current
-    _save_pdu_info(pdu_info_state.rated_current)
-    return pdu_info_state
+    n_outlets = len(PDU.get_om())
+    return models.PduInfo(outlet_count=n_outlets, rated_current=32.0,
+            controller="VAR-SOM-MX7", type="SMART_PDU")
 
 @router.post("/start-scan")
 async def post_start_scan():
@@ -183,46 +138,6 @@ async def post_start_modbus():
 async def post_stop_modbus():
     await functions.stop_modbus()
 
-@router.get("/bluetooth")
-async def get_bluetooth() -> models.BluetoothStatus:
-    status = await functions.get_bluetooth_status()
-    return models.BluetoothStatus(**status)
-
-@router.put("/bluetooth")
-async def put_bluetooth(data: models.BluetoothSettings):
-    await functions.set_bluetooth_settings(data)
-
-@router.post("/start-bluetooth")
-async def post_start_bluetooth():
-    await functions.start_bluetooth()
-
-@router.post("/stop-bluetooth")
-async def post_stop_bluetooth():
-    await functions.stop_bluetooth()
-
-@router.post("/bluetooth/scan/start")
-async def post_start_bluetooth_scan():
-    await functions.start_bluetooth_scan()
-
-@router.post("/bluetooth/scan/stop")
-async def post_stop_bluetooth_scan():
-    await functions.stop_bluetooth_scan()
-
-@router.post("/bluetooth/devices/{mac}/{action}")
-async def post_bluetooth_device_action(mac: str, action: str, response: Response):
-    success = await functions.bluetooth_device_action(mac, action)
-    if not success:
-        response.status_code = 400
-
-@router.post("/bluetooth/pairing/{action}")
-async def post_bluetooth_pairing_action(action: str, response: Response):
-    if action not in ("accept", "refuse"):
-        response.status_code = 400
-        return
-    success = await functions.bluetooth_pairing_response(action == "accept")
-    if not success:
-        response.status_code = 400
-
 @router.put("/modbus")
 async def put_modbus_addr(data: models.Modbus):
     await functions.write_modbus(data.addr)
@@ -235,29 +150,3 @@ async def put_modbus_addr(data: models.Modbus):
 async def get_modbus_addr() -> models.Modbus:
     addr = await functions.read_modbus()
     return models.Modbus(addr=addr)
-
-
-@router.get("/update-status")
-async def get_update_status(refresh: bool = False) -> models.UpdateStatus:
-    status = functions.get_update_status(refresh=refresh)
-    return models.UpdateStatus(**status)
-
-
-@router.put("/update-settings")
-async def put_update_settings(data: models.UpdateSettings):
-    functions.set_update_settings(
-        data.auto_update,
-        data.update_server,
-        data.check_interval_hours,
-        data.ota_enabled,
-    )
-
-
-@router.post("/update-confirm")
-async def post_update_confirm(data: models.UpdateConfirm):
-    functions.confirm_update(data.confirm)
-
-
-@router.post("/ota-check-now")
-async def post_ota_check_now():
-    return functions.run_ota_check_now()

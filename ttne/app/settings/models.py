@@ -1,6 +1,4 @@
 # pylint: disable=no-name-in-module
-from typing import List, Optional
-
 from pydantic import BaseModel
 from ttne.config import Config
 from ttne.version import OM_VERSION, PMB_VERSION
@@ -35,10 +33,6 @@ class PduInfo(BaseModel):
     type: str
 
 
-class PduInfoUpdate(BaseModel):
-    rated_current: float
-
-
 class StartScanRsp(BaseModel):
     success: bool
 
@@ -56,63 +50,3 @@ class Modbus(BaseModel):
 
 class SWUpdate(BaseModel):
     filename: str
-
-
-class UpdateStatus(BaseModel):
-    is_pending: bool = False
-    auto_update: bool = False
-    update_server: str = ""
-    installed_version: str = Config.VERSION
-    available_version: str = ""
-    last_check_time: str = ""
-    last_update_time: str = ""
-    ota_status: str = "idle"
-    last_error: str = ""
-    download_progress: int = 0
-    check_interval_hours: int = 24
-    ota_enabled: bool = True
-    ota_provider: str = "github_repo"
-    active_update_source: str = ""
-    update_phase: str = "idle"
-    update_busy: bool = False
-    pending_source: str = ""
-
-
-class UpdateSettings(BaseModel):
-    auto_update: bool
-    update_server: str
-    check_interval_hours: int = 24
-    ota_enabled: bool = True
-
-
-class UpdateConfirm(BaseModel):
-    confirm: bool
-
-
-class BluetoothSettings(BaseModel):
-    powered: Optional[bool] = None
-    pairable: Optional[bool] = None
-    discoverable: Optional[bool] = None
-
-
-class BluetoothDevice(BaseModel):
-    mac: str
-    name: str = ""
-    paired: bool = False
-    trusted: bool = False
-    connected: bool = False
-    rssi: Optional[int] = None
-
-
-class BluetoothStatus(BaseModel):
-    controller_mac: str = ""
-    name: str = ""
-    powered: bool = False
-    pairable: bool = False
-    discoverable: bool = False
-    discovering: bool = False
-    pairing_request: bool = False
-    pairing_mac: str = ""
-    pairing_name: str = ""
-    pairing_passkey: str = ""
-    devices: List[BluetoothDevice] = []

@@ -13,7 +13,6 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from ttne import utils
 from ttne.app.network import functions as nw_functions
-from ttne.config import Config
 from ttne.sn_pn_generator import *
 from .. import gateway_helper
 
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 SNMP_NMS_FILE = "/tmp/ne_fw_api_snmp_nms"
-SWUPDATE_FILE = "/home/root/ttfile.bin"  # legacy; web/OTA use per-channel staging paths
+SWUPDATE_FILE = "/home/root/ttfile.bin"
 CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
@@ -30,9 +29,6 @@ MODBUS_FILE = "/home/root/.ne/modbus_addr"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
-BT_AGENT_PROCESS = None
-BT_AGENT_PENDING = None
-BT_AGENT_LAST_DEVICE = {"mac": "", "name": ""}
 
 
 async def get_mac_address() -> str:
@@ -79,11 +75,6 @@ def uptime() -> str:
     return time.strftime("%H:%M", time.gmtime(elapsed_time))
 
 
-def get_software_version() -> str:
-    """Return the current software version shown in System Info."""
-    return Config.VERSION
-
-
 async def read_snmp_nms() -> ["str", "str", "str"]:
     name = ""
     contact = ""
@@ -100,39 +91,12 @@ async def write_snmp_nms(name, contact, location):
 
 
 def update(update_file):
-    from ttne.update.coordinator import UpdateCoordinator, UpdateSource
-
-    logger.info("Web UI update upload received")
-    ok, reason = UpdateCoordinator.begin(UpdateSource.WEB, "staging")
-    if not ok:
-        logger.warning("Web update rejected: %s", reason)
-        try:
-            os.remove(update_file)
-        except OSError:
-            pass
-        return {"is_pending": False, "error": reason}
-
-    dest = UpdateCoordinator.ensure_staging_dir(UpdateSource.WEB)
-    os.rename(update_file, dest)
-    logger.info("Web update saved to %s", dest)
-
-    auto_update, _ = _read_update_config()
-
-    if auto_update:
-        UpdateCoordinator.set_phase("pending_confirm", firmware_path=dest)
-        _set_update_pending(True)
-        logger.info("Web update pending confirmation on PDU display")
-    else:
-        UpdateCoordinator.set_phase("installing", firmware_path=dest)
-        logger.info("Web update installing immediately")
-        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + dest))
-
-    try:
-        shutil.rmtree("/home/root/.ne/uploads")
-    except Exception as e:
-        logger.warning(f"Could not remove upload directory: {e}")
-
-    return {"is_pending": auto_update}
+    logger.info("Saving update...")
+    os.rename(update_file, SWUPDATE_FILE)
+    logger.info("Update saved")
+    shutil.rmtree("/home/root/.ne/uploads")
+    logger.info("Upload directory removed")
+    utils.schedule_in(5, utils.shell("usb_autorun.sh run " + SWUPDATE_FILE))
 
 async def ca_cert(ca_cert_file):
     logger.info("Saving CA cert...")
@@ -154,257 +118,13 @@ def reboot():
 
 def factory_reset():
     logger.info("Factory reset")
-    logger.info("Resetting network settings and restoring system defaults before reboot...")
-
-    try:
-        asyncio.create_task(nw_functions.reset_network_config())
-    except Exception as e:
-        logger.warning(f"Network reset task failed: {e}")
-
     home_dir = os.path.expanduser("~/")
-    cleanup_cmd = (
-        f"rm -rf {home_dir}/* {home_dir}/.[!.]* {home_dir}/..?*; "
-        f"mkdir -p {os.path.dirname(UPDATE_CONFIG_FILE)}; "
-        f"printf 'true\\n\\n' > {UPDATE_CONFIG_FILE}; "
-        f"mkdir -p {os.path.dirname(BLUETOOTH_CONFIG_FILE)}; "
-        f"printf 'true\\n' > {BLUETOOTH_CONFIG_FILE}; "
-        "reboot"
-    )
-    utils.schedule_in(5, utils.shell(cleanup_cmd))
+    utils.schedule_in(5,
+            utils.shell(f"rm -rf {home_dir}/* {home_dir}/.*; reboot"))
 
 async def start_scan():
     logger.info("Start scan")
     return await gateway_helper.start_scan()
-
-
-def _parse_bt_bool(value: str) -> bool:
-    return value.strip().lower() == "yes"
-
-
-async def _bluetoothctl(*commands):
-    cmd = " && ".join([f"echo '{command}'" for command in commands])
-    return await utils.shell(f"({cmd}) | bluetoothctl")
-
-
-async def _bt_agent_write(command):
-    global BT_AGENT_PROCESS
-    if BT_AGENT_PROCESS is None or BT_AGENT_PROCESS.returncode is not None:
-        return False
-    BT_AGENT_PROCESS.stdin.write((command + "\n").encode())
-    await BT_AGENT_PROCESS.stdin.drain()
-    return True
-
-
-async def _bt_agent_reader(process):
-    global BT_AGENT_PENDING, BT_AGENT_LAST_DEVICE
-    while True:
-        line = await process.stdout.readline()
-        if not line:
-            return
-        text = line.decode(errors="replace").strip()
-        logger.debug(f"bluetoothctl agent: {text}")
-
-        device_match = re.search(r"Device ([0-9A-Fa-f:]{17})(?: (.*))?", text)
-        if device_match:
-            BT_AGENT_LAST_DEVICE = {
-                "mac": device_match.group(1),
-                "name": (device_match.group(2) or "").strip(),
-            }
-
-        request = any(phrase in text for phrase in (
-            "Confirm passkey",
-            "Authorize service",
-            "Accept pairing",
-            "Request confirmation",
-            "Request authorization",
-        ))
-        if request:
-            passkey_match = re.search(r"passkey\s+([0-9]+)", text, re.IGNORECASE)
-            BT_AGENT_PENDING = {
-                "mac": BT_AGENT_LAST_DEVICE["mac"],
-                "name": BT_AGENT_LAST_DEVICE["name"] or "Bluetooth device",
-                "passkey": passkey_match.group(1) if passkey_match else "",
-            }
-
-
-async def ensure_bluetooth_agent():
-    global BT_AGENT_PROCESS
-    if BT_AGENT_PROCESS is not None and BT_AGENT_PROCESS.returncode is None:
-        return
-
-    BT_AGENT_PROCESS = await asyncio.create_subprocess_exec(
-        "bluetoothctl",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    asyncio.create_task(_bt_agent_reader(BT_AGENT_PROCESS))
-    await asyncio.sleep(0.2)
-    await _bt_agent_write("agent KeyboardDisplay")
-    await _bt_agent_write("default-agent")
-
-
-async def get_bluetooth_status():
-    logger.info("Reading Bluetooth status")
-    await ensure_bluetooth_agent()
-    status = {
-        "controller_mac": "",
-        "name": "",
-        "powered": False,
-        "pairable": False,
-        "discoverable": False,
-        "discovering": False,
-        "pairing_request": BT_AGENT_PENDING is not None,
-        "pairing_mac": BT_AGENT_PENDING["mac"] if BT_AGENT_PENDING else "",
-        "pairing_name": BT_AGENT_PENDING["name"] if BT_AGENT_PENDING else "",
-        "pairing_passkey": BT_AGENT_PENDING["passkey"] if BT_AGENT_PENDING else "",
-        "devices": [],
-    }
-
-    retval, output = await _bluetoothctl("show")
-    if retval == 0 and output:
-        for line in output.splitlines():
-            line = line.strip()
-            if line.startswith("Controller "):
-                parts = line.split()
-                if len(parts) > 1:
-                    status["controller_mac"] = parts[1]
-            elif line.startswith("Name:"):
-                status["name"] = line.split(":", 1)[1].strip()
-            elif line.startswith("Powered:"):
-                status["powered"] = _parse_bt_bool(line.split(":", 1)[1])
-            elif line.startswith("Pairable:"):
-                status["pairable"] = _parse_bt_bool(line.split(":", 1)[1])
-            elif line.startswith("Discoverable:"):
-                status["discoverable"] = _parse_bt_bool(line.split(":", 1)[1])
-            elif line.startswith("Discovering:"):
-                status["discovering"] = _parse_bt_bool(line.split(":", 1)[1])
-
-    retval, output = await _bluetoothctl("devices")
-    if retval != 0 or not output:
-        return status
-
-    seen = set()
-    for line in output.splitlines():
-        line = line.strip()
-        if not line.startswith("Device "):
-            continue
-        parts = line.split(" ", 2)
-        if len(parts) < 2 or parts[1] in seen:
-            continue
-        mac = parts[1]
-        seen.add(mac)
-        fallback_name = parts[2] if len(parts) > 2 else mac
-        device = {
-            "mac": mac,
-            "name": fallback_name,
-            "paired": False,
-            "trusted": False,
-            "connected": False,
-            "rssi": None,
-        }
-
-        info_retval, info_output = await _bluetoothctl(f"info {mac}")
-        if info_retval == 0 and info_output:
-            for info_line in info_output.splitlines():
-                info_line = info_line.strip()
-                if info_line.startswith("Name:"):
-                    device["name"] = info_line.split(":", 1)[1].strip()
-                elif info_line.startswith("Alias:") and not device["name"]:
-                    device["name"] = info_line.split(":", 1)[1].strip()
-                elif info_line.startswith("Paired:"):
-                    device["paired"] = _parse_bt_bool(info_line.split(":", 1)[1])
-                elif info_line.startswith("Trusted:"):
-                    device["trusted"] = _parse_bt_bool(info_line.split(":", 1)[1])
-                elif info_line.startswith("Connected:"):
-                    device["connected"] = _parse_bt_bool(info_line.split(":", 1)[1])
-                elif info_line.startswith("RSSI:"):
-                    try:
-                        device["rssi"] = int(info_line.split(":", 1)[1].strip())
-                    except ValueError:
-                        device["rssi"] = None
-        status["devices"].append(device)
-
-    return status
-
-
-async def set_bluetooth_settings(settings):
-    logger.info("Writing Bluetooth settings")
-    await ensure_bluetooth_agent()
-    commands = []
-    if settings.powered is not None:
-        commands.append(f"power {'on' if settings.powered else 'off'}")
-    if settings.pairable is not None:
-        commands.append(f"pairable {'on' if settings.pairable else 'off'}")
-    if settings.discoverable is not None:
-        commands.append(f"discoverable {'on' if settings.discoverable else 'off'}")
-    if not commands:
-        return
-    retval, output = await _bluetoothctl(*commands)
-    if retval != 0:
-        logger.warning(f"Bluetooth settings failed: {output}")
-        return
-    if settings.powered is not None:
-        _write_bluetooth_config(settings.powered)
-
-
-async def start_bluetooth():
-    await ensure_bluetooth_agent()
-    retval, output = await _bluetoothctl("power on")
-    if retval != 0:
-        logger.warning(f"Bluetooth start failed: {output}")
-        return
-    _write_bluetooth_config(True)
-
-
-async def stop_bluetooth():
-    await ensure_bluetooth_agent()
-    retval, output = await _bluetoothctl("power off")
-    if retval != 0:
-        logger.warning(f"Bluetooth stop failed: {output}")
-        return
-    _write_bluetooth_config(False)
-
-
-async def start_bluetooth_scan():
-    await ensure_bluetooth_agent()
-    if not await _bt_agent_write("scan on"):
-        logger.warning("Bluetooth scan start failed: unable to write scan command")
-
-
-async def stop_bluetooth_scan():
-    await ensure_bluetooth_agent()
-    if not await _bt_agent_write("scan off"):
-        logger.warning("Bluetooth scan stop failed: unable to write scan command")
-
-
-async def bluetooth_device_action(mac, action):
-    await ensure_bluetooth_agent()
-    if not re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", mac):
-        logger.warning(f"Invalid Bluetooth MAC: {mac}")
-        return False
-    allowed = {
-        "pair": f"pair {mac}",
-        "trust": f"trust {mac}",
-        "connect": f"connect {mac}",
-        "disconnect": f"disconnect {mac}",
-        "remove": f"remove {mac}",
-        "cancel-pairing": f"cancel-pairing {mac}",
-    }
-    if action not in allowed:
-        return False
-    retval, output = await _bluetoothctl(allowed[action])
-    if retval != 0:
-        logger.warning(f"Bluetooth {action} failed for {mac}: {output}")
-    return retval == 0
-
-
-async def bluetooth_pairing_response(accept):
-    global BT_AGENT_PENDING
-    await ensure_bluetooth_agent()
-    ok = await _bt_agent_write("yes" if accept else "no")
-    BT_AGENT_PENDING = None
-    return ok
 
 async def write_license(type_id, expiration_date):
     #TODO write, needs the signed string
@@ -545,226 +265,3 @@ async def read_modbus() -> int:
         logger.info(f"Modbus address: {addr}")
         return addr
     return -1
-
-
-# Update Status Management
-UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
-UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
-BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
-DEFAULT_AUTO_UPDATE = True
-DEFAULT_BLUETOOTH_POWERED = True
-
-
-def _read_update_config():
-    """Read auto_update flag and update_server from config file"""
-    auto_update = DEFAULT_AUTO_UPDATE
-    update_server = ""
-    if os.path.isfile(UPDATE_CONFIG_FILE):
-        try:
-            with open(UPDATE_CONFIG_FILE, 'r') as f:
-                lines = f.readlines()
-                if len(lines) > 0:
-                    auto_update = lines[0].strip().lower() == "true"
-                if len(lines) > 1:
-                    update_server = lines[1].strip()
-        except Exception as e:
-            logger.error(f"Error reading update config: {e}")
-    return auto_update, update_server
-
-
-def _write_update_config(auto_update, server):
-    """Write auto_update flag and update_server to config file"""
-    try:
-        os.makedirs(os.path.dirname(UPDATE_CONFIG_FILE), exist_ok=True)
-        with open(UPDATE_CONFIG_FILE, 'w') as f:
-            f.write("true\n" if auto_update else "false\n")
-            f.write(server + "\n")
-        logger.info(f"Update config written: auto_update={auto_update}, server={server}")
-    except Exception as e:
-        logger.error(f"Error writing update config: {e}")
-
-
-def _is_update_pending():
-    """Check if update is pending"""
-    return os.path.isfile(UPDATE_STATUS_FILE)
-
-
-def _set_update_pending(pending):
-    """Mark update as pending or clear pending status"""
-    try:
-        os.makedirs(os.path.dirname(UPDATE_STATUS_FILE), exist_ok=True)
-        if pending:
-            with open(UPDATE_STATUS_FILE, 'w') as f:
-                f.write("true")
-            logger.info("Update marked as pending")
-        else:
-            if os.path.isfile(UPDATE_STATUS_FILE):
-                os.remove(UPDATE_STATUS_FILE)
-            logger.info("Update pending status cleared")
-    except Exception as e:
-        logger.error(f"Error setting update pending status: {e}")
-
-
-def get_update_status(refresh: bool = False):
-    """Get current update status"""
-    from ttne.ota import config as ota_config
-    from ttne.ota import state as ota_state
-    from ttne.ota.remote import provider_name
-    from ttne.ota.updater import run_peek
-    from ttne.update.coordinator import UpdateCoordinator
-
-    is_pending = _is_update_pending()
-    auto_update, update_server = _read_update_config()
-    ota_cfg = ota_config.load_config()
-    channel = UpdateCoordinator.public_status()
-    ota_view = ota_state.public_view()
-
-    # Ensure OTA state 'installed_version' matches the System Info software
-    # version source so the UI and OTA logic use the same baseline.
-    try:
-        current_sw = get_software_version()
-        if current_sw and ota_view.get("installed_version") != current_sw:
-            ota_state.update_state(installed_version=current_sw)
-            ota_view = ota_state.public_view()
-    except Exception:
-        logger.exception("Failed to sync installed_version with system-info")
-
-    active_ota_statuses = (
-        "checking", "downloading", "verifying", "installing", "pending_reboot",
-    )
-    should_peek = (
-        ota_cfg.get("enabled", True)
-        and ota_view.get("status") not in active_ota_statuses
-        and (refresh or not ota_view.get("last_check_time"))
-    )
-    if should_peek:
-        ota_view = run_peek()
-    logger.info(
-        "Update status: pending=%s, auto_update=%s, server=%s, ota=%s",
-        is_pending, auto_update, update_server, ota_view.get("status"),
-    )
-    return {
-        "is_pending": is_pending,
-        "auto_update": auto_update,
-        "update_server": update_server,
-        "installed_version": ota_view.get("installed_version", ""),
-        "available_version": ota_view.get("available_version", ""),
-        "last_check_time": ota_view.get("last_check_time", ""),
-        "last_update_time": ota_view.get("last_update_time", ""),
-        "ota_status": ota_view.get("status", "idle"),
-        "last_error": ota_view.get("last_error", ""),
-        "download_progress": ota_view.get("download_progress", 0),
-        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 24)),
-        "ota_enabled": bool(ota_cfg.get("enabled", True)),
-        "ota_provider": provider_name(ota_cfg),
-        "active_update_source": channel.get("active_update_source", ""),
-        "update_phase": channel.get("update_phase", "idle"),
-        "update_busy": channel.get("update_busy", False),
-        "pending_source": UpdateCoordinator.pending_source(),
-    }
-
-
-def set_update_settings(auto_update, server, check_interval_hours=24,
-        ota_enabled=True):
-    """Set auto-update flag, server address, and OTA options."""
-    from ttne.ota import config as ota_config
-
-    _write_update_config(auto_update, server)
-    cfg = ota_config.load_config()
-    cfg["enabled"] = ota_enabled
-    cfg["check_interval_hours"] = 24 if check_interval_hours not in (1, 24) else check_interval_hours
-    ota_config.save_config(cfg)
-    logger.info(
-        "Update settings saved: auto_update=%s, ota_enabled=%s, interval=%sh",
-        auto_update, ota_enabled, cfg["check_interval_hours"],
-    )
-
-
-def run_ota_check_now():
-    from ttne.ota.updater import run_check
-
-    logger.info("Manual OTA check requested")
-    return run_check()
-
-
-def confirm_update(confirm):
-    """Confirm or reject pending update from web UI or OTA."""
-    from ttne.ota import state as ota_state
-    from ttne.update.coordinator import UpdateCoordinator, UpdateSource
-
-    firmware_path = UpdateCoordinator.pending_firmware_path()
-    source = UpdateCoordinator.pending_source()
-    if not firmware_path:
-        logger.warning("No pending update to confirm")
-        _set_update_pending(False)
-        return
-
-    if confirm:
-        logger.info("User confirmed %s update, executing...", source or "unknown")
-        UpdateCoordinator.set_phase("installing", firmware_path=firmware_path)
-        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + firmware_path))
-        if source == UpdateSource.OTA.value:
-            ota_state.update_state(status="pending_reboot")
-    else:
-        logger.info("User rejected %s update", source or "unknown")
-        if os.path.isfile(firmware_path):
-            try:
-                os.remove(firmware_path)
-            except Exception as e:
-                logger.error(f"Error removing update file: {e}")
-        if source == UpdateSource.OTA.value:
-            pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
-            if os.path.isfile(pending_file):
-                os.remove(pending_file)
-            ota_state.set_status("idle")
-        if source:
-            UpdateCoordinator.end(UpdateSource(source), success=False)
-        else:
-            UpdateCoordinator.clear_session()
-
-    _set_update_pending(False)
-
-
-# Bluetooth Settings Management
-def _read_bluetooth_config():
-    """Read Bluetooth powered setting from config file"""
-    powered = DEFAULT_BLUETOOTH_POWERED
-    if os.path.isfile(BLUETOOTH_CONFIG_FILE):
-        try:
-            with open(BLUETOOTH_CONFIG_FILE, 'r') as f:
-                powered = f.read().strip().lower() == "true"
-        except Exception as e:
-            logger.error(f"Error reading bluetooth config: {e}")
-    return powered
-
-
-def _write_bluetooth_config(powered):
-    """Write Bluetooth powered setting to config file"""
-    try:
-        os.makedirs(os.path.dirname(BLUETOOTH_CONFIG_FILE), exist_ok=True)
-        with open(BLUETOOTH_CONFIG_FILE, 'w') as f:
-            f.write("true\n" if powered else "false\n")
-        logger.info(f"Bluetooth config written: powered={powered}")
-    except Exception as e:
-        logger.error(f"Error writing bluetooth config: {e}")
-
-
-async def init_persistent_settings():
-    """Initialize persistent settings on startup"""
-    logger.info("Initializing persistent settings")
-    
-    # Ensure defaults are written if files don't exist
-    if not os.path.isfile(UPDATE_CONFIG_FILE):
-        _write_update_config(DEFAULT_AUTO_UPDATE, "")
-    
-    if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
-        _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
-    
-    # Apply Bluetooth default if configured
-    try:
-        bt_powered = _read_bluetooth_config()
-        if bt_powered:
-            logger.info("Bluetooth configured to be powered on startup")
-            await start_bluetooth()
-    except Exception as e:
-        logger.warning(f"Could not initialize Bluetooth: {e}")

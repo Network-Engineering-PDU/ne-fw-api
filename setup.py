@@ -31,17 +31,13 @@ setuptools.setup(
         "packaging==21.3", # No sé como va lo de las versiones
         "pyserial==3.5", # No sé como va lo de las versiones
         "smbus2==0.3.0", # No sé como va lo de las versiones
-        "cryptography>=40.0.0",
     ],
     entry_points={
         "console_scripts": {
             "ttnedaemon = ttne.__init__:daemon",
-            "ttne-ota = ttne.ota.daemon:main",
-            "ttne-update-notify = ttne.update.notify:main",
         }
     },
     scripts=[
-        "scripts/ttnelog",
-        "scripts/ota-boot-health.sh",
+        "scripts/ttnelog"
     ]
 )
