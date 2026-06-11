@@ -22,17 +22,19 @@ class NetworkConfig():
         self.type = None
         self.ssid = None
         self.psk = None
+        self.eth_interface = "eth1"  # Selected ethernet port: eth0 (ETH-2) or eth1 (ETH-1)
         self.reset()
     
     def reset(self):
-        self.ip = ""
-        self.mask = ""
-        self.gateway = ""
-        self.dns1 = ""
+        self.ip = "192.168.1.100"
+        self.mask = "255.255.255.0"
+        self.gateway = "192.168.1.1"
+        self.dns1 = "8.8.8.8"
         self.dns2 = ""
-        self.type = NetworkType.UNCONF
+        self.type = NetworkType.ETH_STATIC
         self.ssid = ""
         self.psk = ""
+        self.eth_interface = "eth1"   # Selected ethernet port: eth0 (ETH-2) or eth1 (ETH-1)
 
     def is_static(self):
         return NetworkType.is_static(self.type)
@@ -54,15 +56,29 @@ class NetworkConfig():
 
     async def _get_ip_from_if(self, iface):
         retval, output = await utils.shell(f"nmcli -t d show {iface}")
+        ip = None
         for l in output.split("\n"):
             if "IP4.ADDRESS[1]" in l:
                 ip = l.split(":",1)[1].strip()
             if "IP4.GATEWAY" in l:
                 self.gateway = l.split(":",1)[1].strip()
 
+        if ip is None:
+            return False
+
         iface_ip = ipaddress.IPv4Interface(ip)
         self.ip = str(iface_ip.ip)
         self.mask = str(iface_ip.netmask)
+        return True
+
+    async def _get_active_eth_if(self):
+        for iface in NetworkType.get_available_eth_interfaces():
+            retval, output = await utils.shell(
+                f"nmcli -t -f GENERAL.STATE d show {iface}"
+            )
+            if retval == 0 and "connected" in output:
+                return iface
+        return None
 
 
     async def get_current_ip(self):
@@ -71,9 +87,10 @@ class NetworkConfig():
             self.type = NetworkType.ETH_STATIC
             retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE con show {self.ETH_CONN}")
             if "activated" in output:
-                iface = NetworkType.to_interface(self.type)
-                await self._get_ip_from_if(iface)
-                return
+                iface = await self._get_active_eth_if()
+                if iface is not None and await self._get_ip_from_if(iface):
+                    self.eth_interface = iface  # Store which interface is being used
+                    return
 
         retval, output = await utils.shell(f"nmcli -t con show {self.WIFI_CONN}")
         if retval == 0: # Wifi is configured
@@ -88,13 +105,10 @@ class NetworkConfig():
                 await self._get_ip_from_if(iface)
                 return
 
-        # In other cases the connection is dhcp
-        self.type = NetworkType.ETH_DHCP
-        iface = NetworkType.to_interface(self.type)
-        retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE d show {iface}")
-        if "connected" in output:
-            await self._get_ip_from_if(iface)
-            return
+        # No configured connection exists; keep the default static network settings and apply defaults.
+        logger.info("No active network connection found; using default static network settings")
+        await self.save()
+        return
 
     async def get_wifi_ssid(self):
         retval, output = await utils.shell(f"nmcli -t -f 802-11-wireless.ssid con show {self.WIFI_CONN}")
@@ -114,14 +128,25 @@ class NetworkConfig():
         retval, output = await utils.shell(f"nmcli con up {self.WIFI_CONN}")
 
     async def set_ethernet(self):
-        logger.info("Set Ethernet")
-        retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN}")
+        logger.info(f"Set Ethernet on interface {self.eth_interface}")
+        # Remove any existing ethernet connection with the configured name
+        retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN} || true")
+        ifname = self.eth_interface if self.eth_interface else "*"
 
         if self.is_static():
-            iface = NetworkType.to_interface(self.type)
             iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
-            retval, output = await utils.shell(f"nmcli connection add type ethernet con-name ble-eth-conn ifname {iface} ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{self.dns1},{self.dns2}'")
-            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN}")
+            dns_value = self.dns1
+            if self.dns2:
+                dns_value = f"{self.dns1},{self.dns2}"
+            retval, output = await utils.shell(
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '{ifname}' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes"
+            )
+            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{ifname}' || true")
+        else:
+            retval, output = await utils.shell(
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '{ifname}' ipv4.method auto connection.autoconnect yes"
+            )
+            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{ifname}' || true")
 
     async def save(self):
         if self.is_ethernet():
@@ -139,3 +164,4 @@ class NetworkConfig():
         if retval != 0:
             logger.warning("Can not delete WiFi connection (not exist?)")
         self.reset()
+        await self.save()

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Response
 
+from ttne import utils
 from . import models, functions
 
 
@@ -37,8 +38,10 @@ async def put_interfaces(data: models.BaseNetworkConfig, response: Response):
         response.status_code = 400
         return
 
-    # TODO: Return response and then connect
-    await functions.set_network_config(data)
+    # Apply the network change asynchronously so the local display UI
+    # is not blocked waiting for nmcli to finish reconfiguring the link.
+    utils.schedule_in(0, functions.set_network_config(data))
+    response.status_code = 202
 
 @router.post("/reset")
 async def put_reset():

@@ -1,0 +1,9 @@
+{
+  "firmware_version": "0.2.4",
+  "firmware_file": "ttfile.bin",
+  "sha256": "a6f4d8e01234567890abcdef01234567890abcdef01234567890abcdef01234567",
+  "min_compatible_version": "0.2.0",
+  "release_notes": "OTA release",
+  "published_at": "2026-06-01T12:00:00Z",
+  "hardware_compat": ["imx7-var-som:1.0"]
+}

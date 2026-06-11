@@ -16,7 +16,7 @@ async def get_iface_mac(iface: str) -> str:
     retval, output = await utils.shell(f"ip address show dev {iface}")
     if retval != 0 or output is None:
         return ""
-    match = re.search("link/ether ([\d\w\:]+)", output)
+    match = re.search(r"link/ether ([\d\w:]+)", output)
     if not match:
         return ""
     return match.group(1)
@@ -33,6 +33,8 @@ async def get_network_config() -> models.MacNetworkConfig:
     await nw_config.get_current_ip()
     await nw_config.get_wifi_ssid()
     await nw_config.get_static()
+    eth_iface = await nw_config._get_active_eth_if() or nw_config.eth_interface or "eth0"
+    nw_config.eth_interface = eth_iface  # Store the detected interface
 
     config_params = models.NetworkConfigParams(
         ip=nw_config.ip,
@@ -40,14 +42,16 @@ async def get_network_config() -> models.MacNetworkConfig:
         gateway_ip=nw_config.gateway,
         dns=f"{nw_config.dns1},{nw_config.dns2}",
         ssid=nw_config.ssid,
-        password=""
+        password="",
+        eth_interface=nw_config.eth_interface  # Include selected interface
     )
     network_config = models.MacNetworkConfig(
         type=nw_config.type,
         dhcp=(nw_config.type == NetworkType.ETH_DHCP or nw_config.type == NetworkType.WIFI_DHCP),
         params=config_params,
-        ethernet_mac=await nw_config.get_mac("eth0"),
-        wifi_mac=await nw_config.get_mac("wlan0")
+        ethernet_mac=await nw_config.get_mac(eth_iface),
+        wifi_mac=await nw_config.get_mac("wlan0"),
+        eth_interface=nw_config.eth_interface  # Include selected interface in response
     )
     logger.info(network_config)
     return network_config
@@ -58,6 +62,13 @@ async def set_network_config(config: models.BaseNetworkConfig):
     nw_config.type = config.type
     nw_config.ssid = config.params.ssid
     nw_config.psk = config.params.password
+    # Determine which ethernet interface to use. If the API explicitly provides
+    # an `eth_interface` use that, otherwise try to auto-detect the active one.
+    if getattr(config, 'eth_interface', None):
+        nw_config.eth_interface = config.eth_interface
+    else:
+        detected = await nw_config._get_active_eth_if()
+        nw_config.eth_interface = detected or "eth1"
 
     if not config.dhcp:
         nw_config.ip = config.params.ip
@@ -77,6 +88,7 @@ async def set_network_config(config: models.BaseNetworkConfig):
     logger.info(nw_config.gateway)
     logger.info(nw_config.dns1)
     logger.info(nw_config.dns2)
+    logger.info(f"Using ethernet interface: {nw_config.eth_interface}")
 
     await nw_config.save()
 
