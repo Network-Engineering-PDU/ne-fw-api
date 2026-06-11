@@ -8,6 +8,7 @@ from ttne.app import inputs
 from ttne.app import outputs
 from ttne.app import settings
 from ttne.app import network
+from ttne.app.settings import functions as settings_functions
 
 from ttne.om import Om
 from ttne.pmb import Pmb
@@ -30,6 +31,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def init_persistent_settings():
+    await settings_functions.init_persistent_settings()
+
 
 app.include_router(inputs.router)
 app.include_router(outputs.router)

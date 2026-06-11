@@ -343,6 +343,9 @@ async def set_bluetooth_settings(settings):
     retval, output = await _bluetoothctl(*commands)
     if retval != 0:
         logger.warning(f"Bluetooth settings failed: {output}")
+        return
+    if settings.powered is not None:
+        _write_bluetooth_config(settings.powered)
 
 
 async def start_bluetooth():
@@ -350,6 +353,8 @@ async def start_bluetooth():
     retval, output = await _bluetoothctl("power on")
     if retval != 0:
         logger.warning(f"Bluetooth start failed: {output}")
+        return
+    _write_bluetooth_config(True)
 
 
 async def stop_bluetooth():
@@ -357,6 +362,8 @@ async def stop_bluetooth():
     retval, output = await _bluetoothctl("power off")
     if retval != 0:
         logger.warning(f"Bluetooth stop failed: {output}")
+        return
+    _write_bluetooth_config(False)
 
 
 async def start_bluetooth_scan():
