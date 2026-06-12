@@ -7,6 +7,8 @@ import logging
 import fnmatch
 import pickle
 import base64
+import json
+import shlex
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -155,6 +157,7 @@ def reboot():
 def factory_reset():
     logger.info("Factory reset")
     logger.info("Resetting network settings and restoring system defaults before reboot...")
+    from ttne.ota import config as ota_config
 
     try:
         asyncio.create_task(nw_functions.reset_network_config())
@@ -162,10 +165,14 @@ def factory_reset():
         logger.warning(f"Network reset task failed: {e}")
 
     home_dir = os.path.expanduser("~/")
+    default_ota_config = shlex.quote(
+        json.dumps(ota_config.DEFAULTS, indent=2, sort_keys=True) + "\n"
+    )
     cleanup_cmd = (
         f"rm -rf {home_dir}/* {home_dir}/.[!.]* {home_dir}/..?*; "
         f"mkdir -p {os.path.dirname(UPDATE_CONFIG_FILE)}; "
         f"printf 'true\\n\\n' > {UPDATE_CONFIG_FILE}; "
+        f"printf %s {default_ota_config} > {ota_config.OTA_CONFIG_FILE}; "
         f"mkdir -p {os.path.dirname(BLUETOOTH_CONFIG_FILE)}; "
         f"printf 'true\\n' > {BLUETOOTH_CONFIG_FILE}; "
         "reboot"
@@ -629,8 +636,10 @@ def get_update_status(refresh: bool = False):
     except Exception:
         logger.exception("Failed to sync installed_version with system-info")
 
+    # "checking" is only a metadata fetch. If a previous process dies after
+    # setting it, allowing another peek lets the status repair itself to idle.
     active_ota_statuses = (
-        "checking", "downloading", "verifying", "installing", "pending_reboot",
+        "downloading", "verifying", "installing", "pending_reboot",
     )
     should_peek = (
         ota_cfg.get("enabled", True)
@@ -672,7 +681,9 @@ def set_update_settings(auto_update, server, check_interval_hours=24,
     _write_update_config(auto_update, server)
     cfg = ota_config.load_config()
     cfg["enabled"] = ota_enabled
-    cfg["check_interval_hours"] = 24 if check_interval_hours not in (1, 24) else check_interval_hours
+    if check_interval_hours not in (1, 24, 168, 720):
+        check_interval_hours = 24
+    cfg["check_interval_hours"] = check_interval_hours
     ota_config.save_config(cfg)
     logger.info(
         "Update settings saved: auto_update=%s, ota_enabled=%s, interval=%sh",
@@ -751,11 +762,16 @@ def _write_bluetooth_config(powered):
 
 async def init_persistent_settings():
     """Initialize persistent settings on startup"""
+    from ttne.ota import config as ota_config
+
     logger.info("Initializing persistent settings")
     
     # Ensure defaults are written if files don't exist
     if not os.path.isfile(UPDATE_CONFIG_FILE):
         _write_update_config(DEFAULT_AUTO_UPDATE, "")
+
+    if not os.path.isfile(ota_config.OTA_CONFIG_FILE):
+        ota_config.save_config({})
     
     if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
         _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)

@@ -51,6 +51,6 @@ def save_config(cfg: Dict[str, Any]) -> None:
 
 def check_interval_seconds(cfg: Dict[str, Any]) -> int:
     hours = int(cfg.get("check_interval_hours", 24))
-    if hours not in (1, 24):
+    if hours not in (1, 24, 168, 720):
         hours = 24
     return hours * 3600
