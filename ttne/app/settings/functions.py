@@ -733,10 +733,8 @@ def confirm_update(confirm):
     if not firmware_path:
         logger.warning("No pending update to confirm")
         if not confirm:
-            ota_view = ota_state.load_state()
-            if ota_view.get("status") == "pending_reboot" or ota_view.get("available_version"):
-                logger.info("Clearing OTA pending state after user rejection")
-                ota_state.clear_pending_update()
+            logger.info("Clearing OTA pending state after user rejection")
+            ota_state.clear_pending_update()
             UpdateCoordinator.clear_session()
         _set_update_pending(False)
         return
