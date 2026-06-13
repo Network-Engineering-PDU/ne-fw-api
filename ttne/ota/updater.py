@@ -227,6 +227,12 @@ class OtaUpdater:
         installed = settings_functions.get_software_version()
         remote_version = metadata["firmware_version"]
         current_state = ota_state.load_state()
+        active_source = UpdateCoordinator.active_source()
+        active_phase = UpdateCoordinator.active_phase()
+        has_active_ota_session = (
+            active_source == UpdateSource.OTA.value
+            and active_phase in ("pending_confirm", "staging", "installing")
+        )
 
         if not is_newer(remote_version, installed):
             ota_state.mark_check_complete(available_version=remote_version)
@@ -234,15 +240,21 @@ class OtaUpdater:
             return ota_state.public_view()
 
         if (
-            current_state.get("status") in ("pending_reboot", "pending_confirm")
+            has_active_ota_session
+            and current_state.get("status") in ("pending_reboot", "pending_confirm")
             and current_state.get("available_version") == remote_version
-        ) or self._pending_version() == remote_version:
+        ):
             logger.info("OTA update %s already pending", remote_version)
             if current_state.get("status") == "pending_reboot":
                 ota_state.mark_pending_reboot(remote_version)
             else:
                 ota_state.update_state(status="pending_confirm", available_version=remote_version)
             return ota_state.public_view()
+
+        if self._pending_version() == remote_version and not has_active_ota_session:
+            logger.warning("Clearing stale OTA pending version without active session")
+            ota_state.clear_pending_update()
+            current_state = ota_state.load_state()
 
         auto_update, _ = settings_functions._read_update_config()
 

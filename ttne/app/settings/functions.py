@@ -627,6 +627,13 @@ def get_update_status(refresh: bool = False):
     ota_cfg = ota_config.load_config()
     channel = UpdateCoordinator.public_status()
     ota_view = ota_state.public_view()
+    if (
+        ota_view.get("status") in ("pending_confirm", "pending_reboot")
+        and channel.get("active_update_source") != "ota"
+    ):
+        logger.warning("Clearing stale OTA %s state without active session",
+                       ota_view.get("status"))
+        ota_view = ota_state.clear_pending_update()
 
     # Ensure OTA state 'installed_version' matches the System Info software
     # version source so the UI and OTA logic use the same baseline.
@@ -804,6 +811,8 @@ def _write_bluetooth_config(powered):
 async def init_persistent_settings():
     """Initialize persistent settings on startup"""
     from ttne.ota import config as ota_config
+    from ttne.ota import state as ota_state
+    from ttne.update.coordinator import UpdateCoordinator
 
     logger.info("Initializing persistent settings")
     
@@ -813,6 +822,14 @@ async def init_persistent_settings():
 
     if not os.path.isfile(ota_config.OTA_CONFIG_FILE):
         ota_config.save_config({})
+
+    try:
+        logger.info("Clearing OTA pending state after system boot")
+        ota_state.clear_pending_update()
+        UpdateCoordinator.clear_session()
+        _set_update_pending(False)
+    except Exception:
+        logger.exception("Failed to clear OTA boot state")
     
     if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
         _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
