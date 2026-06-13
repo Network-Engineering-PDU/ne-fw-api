@@ -127,12 +127,13 @@ def clear_pending_update() -> Dict[str, Any]:
             except OSError as exc:
                 logger.warning("Could not remove OTA download %s: %s", path, exc)
 
-    return update_state(
+    ota_state = update_state(
         available_version="",
         status="idle",
         last_error="",
         download_progress=0,
     )
+    return ota_state
 
 
 def mark_installed(version: str) -> Dict[str, Any]:
