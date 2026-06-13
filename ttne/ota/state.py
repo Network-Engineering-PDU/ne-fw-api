@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 OTA_DIR = os.path.join(Config.TTNE_DIR, "ota")
 OTA_STATE_FILE = os.path.join(OTA_DIR, "ota_state.json")
 OTA_DOWNLOAD_DIR = os.path.join(OTA_DIR, "downloads")
+PENDING_METADATA_FILE = os.path.join(OTA_DIR, "pending_metadata.json")
 
 STATUSES = (
     "idle",
@@ -20,6 +21,7 @@ STATUSES = (
     "downloading",
     "verifying",
     "installing",
+    "pending_confirm",
     "pending_reboot",
     "failed",
     "success",
@@ -111,6 +113,29 @@ def mark_pending_reboot(available_version: str) -> Dict[str, Any]:
     )
 
 
+def save_pending_metadata(metadata: Dict[str, Any]) -> None:
+    ensure_dirs()
+    tmp_path = PENDING_METADATA_FILE + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(metadata, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp_path, PENDING_METADATA_FILE)
+    except OSError as exc:
+        logger.error("Failed to save OTA pending metadata: %s", exc)
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
+
+
+def load_pending_metadata() -> Dict[str, Any]:
+    try:
+        with open(PENDING_METADATA_FILE, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("No OTA pending metadata available: %s", exc)
+        return {}
+
+
 def clear_pending_update() -> Dict[str, Any]:
     pending_file = os.path.join(OTA_DIR, "pending_version")
     if os.path.isfile(pending_file):
@@ -118,6 +143,12 @@ def clear_pending_update() -> Dict[str, Any]:
             os.remove(pending_file)
         except OSError as exc:
             logger.warning("Could not remove OTA pending version: %s", exc)
+
+    if os.path.isfile(PENDING_METADATA_FILE):
+        try:
+            os.remove(PENDING_METADATA_FILE)
+        except OSError as exc:
+            logger.warning("Could not remove OTA pending metadata: %s", exc)
 
     for name in ("firmware.bin", "firmware.bin.part"):
         path = os.path.join(OTA_DOWNLOAD_DIR, name)

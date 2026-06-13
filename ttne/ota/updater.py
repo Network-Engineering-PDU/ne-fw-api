@@ -48,6 +48,86 @@ class OtaUpdater:
         except OSError:
             return ""
 
+    def _save_pending_metadata(self, metadata: Dict[str, Any]) -> None:
+        ota_state.save_pending_metadata(metadata)
+
+    def _load_pending_metadata(self) -> Dict[str, Any]:
+        return ota_state.load_pending_metadata()
+
+    def _clear_pending_metadata(self) -> None:
+        if os.path.isfile(ota_state.PENDING_METADATA_FILE):
+            try:
+                os.remove(ota_state.PENDING_METADATA_FILE)
+            except OSError as exc:
+                logger.warning("Could not remove OTA pending metadata: %s", exc)
+
+    def _save_pending_version(self, version: str) -> None:
+        pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
+        os.makedirs(ota_state.OTA_DIR, exist_ok=True)
+        with open(pending_file, "w", encoding="utf-8") as fh:
+            fh.write(version + "\n")
+
+    def _prepare_pending_update(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        version = metadata["firmware_version"]
+        staging = UpdateCoordinator.ensure_staging_dir(UpdateSource.OTA)
+
+        ok, reason = UpdateCoordinator.begin(
+            UpdateSource.OTA, "pending_confirm", firmware_path=staging, version=version)
+        if not ok:
+            ota_state.update_state(last_error=reason)
+            return ota_state.public_view()
+
+        self._save_pending_metadata(metadata)
+        self._save_pending_version(version)
+        settings_functions._set_update_pending(True)
+        ota_state.update_state(
+            available_version=version,
+            last_check_time=ota_state._utc_now(),
+            status="pending_confirm",
+            last_error="",
+            download_progress=0,
+        )
+        logger.info("OTA update pending user confirmation on PDU display")
+        return ota_state.public_view()
+
+    def _install_pending_update(self) -> Dict[str, Any]:
+        metadata = self._load_pending_metadata()
+        if not metadata:
+            raise ValueError("No pending OTA metadata available")
+
+        firmware_name = metadata["firmware_file"]
+        expected_sha = metadata["sha256"].lower()
+        staging = UpdateCoordinator.pending_firmware_path()
+        if not staging:
+            staging = UpdateCoordinator.ensure_staging_dir(UpdateSource.OTA)
+
+        ota_state.set_status("downloading", download_progress=0)
+        client = create_client(self.cfg)
+        client.download_firmware(
+            firmware_name,
+            staging,
+            progress_cb=self._progress,
+        )
+
+        ota_state.set_status("verifying")
+        actual_sha = self._sha256_file(staging)
+        if actual_sha != expected_sha:
+            raise ValueError(
+                f"SHA256 mismatch (expected {expected_sha}, got {actual_sha})")
+
+        UpdateCoordinator.set_phase("installing", firmware_path=staging)
+        ota_state.set_status("installing")
+        self._save_pending_version(metadata["firmware_version"])
+        utils.schedule_in(5, utils.shell(
+            "/usr/bin/usb_autorun.sh run " + staging))
+        ota_state.update_state(
+            status="pending_reboot",
+            available_version=metadata["firmware_version"],
+            last_error="",
+        )
+        self._clear_pending_metadata()
+        return ota_state.public_view()
+
     def _fetch_remote_metadata(self):
         """Download and validate remote metadata.json. Returns (client, metadata)."""
         self.cfg = ota_config.load_config()
@@ -124,14 +204,17 @@ class OtaUpdater:
             return ota_state.public_view()
 
         if (
-            current_state.get("status") == "pending_reboot"
+            current_state.get("status") in ("pending_reboot", "pending_confirm")
             and current_state.get("available_version") == remote_version
         ) or self._pending_version() == remote_version:
-            logger.info("OTA update %s already pending reboot", remote_version)
-            ota_state.mark_pending_reboot(remote_version)
+            logger.info("OTA update %s already pending", remote_version)
+            if current_state.get("status") == "pending_reboot":
+                ota_state.mark_pending_reboot(remote_version)
+            else:
+                ota_state.update_state(status="pending_confirm", available_version=remote_version)
             return ota_state.public_view()
 
-        ota_state.mark_check_complete(available_version=remote_version)
+        auto_update, _ = settings_functions._read_update_config()
 
         allowed, block_reason = UpdateCoordinator.can_begin(UpdateSource.OTA)
         if not allowed:
@@ -141,6 +224,9 @@ class OtaUpdater:
                 last_error=block_reason,
             )
             return ota_state.public_view()
+
+        if auto_update:
+            return self._prepare_pending_update(metadata)
 
         logger.info("OTA update available: %s -> %s", installed, remote_version)
         return self._perform_update(client, metadata)
@@ -172,6 +258,7 @@ class OtaUpdater:
                     f"SHA256 mismatch (expected {expected_sha}, got {actual_sha})")
 
             ota_state.set_status("installing")
+            self._save_pending_version(version)
             self._install_firmware(staging, version)
             return ota_state.public_view()
         except Exception as exc:
@@ -187,27 +274,14 @@ class OtaUpdater:
 
     def _install_firmware(self, staging_path: str, new_version: str) -> None:
         """Install firmware using the existing signed update pipeline."""
-        auto_update, _ = settings_functions._read_update_config()
-        logger.info("OTA firmware ready at %s", staging_path)
-
-        pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
-        with open(pending_file, "w", encoding="utf-8") as fh:
-            fh.write(new_version)
-
-        if auto_update:
-            UpdateCoordinator.set_phase("pending_confirm", firmware_path=staging_path)
-            settings_functions._set_update_pending(True)
-            ota_state.update_state(
-                status="pending_reboot",
-                available_version=new_version,
-            )
-            logger.info("OTA update pending user confirmation on PDU display")
-            return
-
         UpdateCoordinator.set_phase("installing", firmware_path=staging_path)
         utils.schedule_in(5, utils.shell(
             "/usr/bin/usb_autorun.sh run " + staging_path))
         ota_state.update_state(status="pending_reboot", available_version=new_version)
+
+    def run_pending_update(self) -> Dict[str, Any]:
+        self.cfg = ota_config.load_config()
+        return self._install_pending_update()
 
 
 def run_check() -> Dict[str, Any]:

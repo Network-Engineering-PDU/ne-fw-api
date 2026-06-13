@@ -741,8 +741,24 @@ def confirm_update(confirm):
 
     if confirm:
         logger.info("User confirmed %s update, executing...", source or "unknown")
-        UpdateCoordinator.set_phase("installing", firmware_path=firmware_path)
-        utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + firmware_path))
+        if source == UpdateSource.OTA.value:
+            from ttne.ota.updater import OtaUpdater
+
+            def _run_pending_ota_install():
+                try:
+                    OtaUpdater().run_pending_update()
+                except Exception:
+                    logger.exception("OTA pending install failed")
+
+            threading.Thread(
+                target=_run_pending_ota_install,
+                name="ota-pending-install",
+                daemon=True,
+            ).start()
+            _set_update_pending(False)
+        else:
+            UpdateCoordinator.set_phase("installing", firmware_path=firmware_path)
+            utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + firmware_path))
         if source == UpdateSource.OTA.value:
             ota_state.update_state(status="pending_reboot")
     else:
