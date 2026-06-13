@@ -625,11 +625,10 @@ def get_update_status(refresh: bool = False):
 
     auto_update, update_server = _read_update_config()
     ota_cfg = ota_config.load_config()
-    channel = UpdateCoordinator.public_status()
     ota_view = ota_state.public_view()
     if (
         ota_view.get("status") in ("pending_confirm", "pending_reboot")
-        and channel.get("active_update_source") != "ota"
+        and UpdateCoordinator.load_session().get("source") != "ota"
     ):
         logger.warning("Clearing stale OTA %s state without active session",
                        ota_view.get("status"))
@@ -645,12 +644,11 @@ def get_update_status(refresh: bool = False):
     except Exception:
         logger.exception("Failed to sync installed_version with system-info")
 
-    is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"
-
     # "checking" is only a metadata fetch. If a previous process dies after
     # setting it, allowing another peek lets the status repair itself to idle.
     active_ota_statuses = (
-        "downloading", "verifying", "installing", "pending_reboot",
+        "pending_confirm", "downloading", "verifying", "installing",
+        "pending_reboot",
     )
     should_peek = (
         ota_cfg.get("enabled", True)
@@ -659,6 +657,9 @@ def get_update_status(refresh: bool = False):
     )
     if should_peek:
         ota_view = run_peek()
+
+    channel = UpdateCoordinator.public_status()
+    is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"
     logger.info(
         "Update status: pending=%s, auto_update=%s, server=%s, ota=%s",
         is_pending, auto_update, update_server, ota_view.get("status"),
