@@ -101,6 +101,40 @@ def mark_check_complete(available_version: str = "") -> Dict[str, Any]:
     )
 
 
+def mark_pending_reboot(available_version: str) -> Dict[str, Any]:
+    return update_state(
+        available_version=available_version,
+        last_check_time=_utc_now(),
+        status="pending_reboot",
+        last_error="",
+        download_progress=100,
+    )
+
+
+def clear_pending_update() -> Dict[str, Any]:
+    pending_file = os.path.join(OTA_DIR, "pending_version")
+    if os.path.isfile(pending_file):
+        try:
+            os.remove(pending_file)
+        except OSError as exc:
+            logger.warning("Could not remove OTA pending version: %s", exc)
+
+    for name in ("firmware.bin", "firmware.bin.part"):
+        path = os.path.join(OTA_DOWNLOAD_DIR, name)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                logger.warning("Could not remove OTA download %s: %s", path, exc)
+
+    return update_state(
+        available_version="",
+        status="idle",
+        last_error="",
+        download_progress=0,
+    )
+
+
 def mark_installed(version: str) -> Dict[str, Any]:
     return update_state(
         installed_version=version,

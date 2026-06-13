@@ -9,6 +9,7 @@ import pickle
 import base64
 import json
 import shlex
+import threading
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -35,6 +36,8 @@ START_TIME = time.time()
 BT_AGENT_PROCESS = None
 BT_AGENT_PENDING = None
 BT_AGENT_LAST_DEVICE = {"mac": "", "name": ""}
+OTA_CHECK_THREAD = None
+OTA_CHECK_LOCK = threading.Lock()
 
 
 async def get_mac_address() -> str:
@@ -692,10 +695,32 @@ def set_update_settings(auto_update, server, check_interval_hours=24,
 
 
 def run_ota_check_now():
+    from ttne.ota import state as ota_state
     from ttne.ota.updater import run_check
 
     logger.info("Manual OTA check requested")
-    return run_check()
+    global OTA_CHECK_THREAD
+
+    def _run_check_bg():
+        try:
+            run_check()
+        except Exception:
+            logger.exception("Manual OTA check failed")
+
+    with OTA_CHECK_LOCK:
+        if OTA_CHECK_THREAD is not None and OTA_CHECK_THREAD.is_alive():
+            logger.info("Manual OTA check already running")
+            return ota_state.public_view()
+
+        ota_state.set_status("checking")
+        OTA_CHECK_THREAD = threading.Thread(
+            target=_run_check_bg,
+            name="manual-ota-check",
+            daemon=True,
+        )
+        OTA_CHECK_THREAD.start()
+
+    return ota_state.public_view()
 
 
 def confirm_update(confirm):
@@ -707,6 +732,12 @@ def confirm_update(confirm):
     source = UpdateCoordinator.pending_source()
     if not firmware_path:
         logger.warning("No pending update to confirm")
+        if not confirm:
+            ota_view = ota_state.load_state()
+            if ota_view.get("status") == "pending_reboot" or ota_view.get("available_version"):
+                logger.info("Clearing OTA pending state after user rejection")
+                ota_state.clear_pending_update()
+            UpdateCoordinator.clear_session()
         _set_update_pending(False)
         return
 
@@ -724,10 +755,7 @@ def confirm_update(confirm):
             except Exception as e:
                 logger.error(f"Error removing update file: {e}")
         if source == UpdateSource.OTA.value:
-            pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
-            if os.path.isfile(pending_file):
-                os.remove(pending_file)
-            ota_state.set_status("idle")
+            ota_state.clear_pending_update()
         if source:
             UpdateCoordinator.end(UpdateSource(source), success=False)
         else:

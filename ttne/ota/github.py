@@ -1,5 +1,6 @@
 """GitHub-hosted firmware: repository files or release assets."""
 
+import base64
 import json
 import logging
 import os
@@ -138,25 +139,21 @@ class GitHubClient:
             self._download_lfs_object(filename, destination, progress_cb)
 
     def _fetch_repo_metadata(self, metadata_name: str) -> Dict[str, Any]:
-        token = self._token()
-        if token:
-            url = self._api_contents_url(metadata_name)
-            rsp = requests.get(
-                url,
-                headers=self._headers(accept="application/vnd.github.raw"),
-                timeout=30,
-            )
-            if not rsp.ok:
-                raise GitHubError(
-                    f"metadata fetch failed ({rsp.status_code}): {rsp.text}")
-            return json.loads(rsp.text)
-
-        url = self._repo_file_url(metadata_name)
-        rsp = requests.get(url, headers={"User-Agent": "ttne-ota"}, timeout=30)
+        url = self._api_contents_url(metadata_name)
+        rsp = requests.get(url, headers=self._headers(), timeout=30)
         if not rsp.ok:
             raise GitHubError(
-                f"metadata fetch failed ({rsp.status_code}): {url}")
-        return json.loads(rsp.text)
+                f"metadata fetch failed ({rsp.status_code}): {rsp.text}")
+
+        data = rsp.json()
+        if data.get("encoding") != "base64" or "content" not in data:
+            raise GitHubError("metadata response did not include file content")
+
+        try:
+            content = base64.b64decode(data["content"]).decode("utf-8")
+            return json.loads(content)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise GitHubError(f"metadata parse failed: {exc}") from exc
 
     def _latest_release(self) -> Dict[str, Any]:
         url = f"{GITHUB_API}/repos/{self.owner}/{self.repo}/releases/latest"

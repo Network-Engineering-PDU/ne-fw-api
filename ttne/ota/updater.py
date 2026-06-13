@@ -40,6 +40,14 @@ class OtaUpdater:
     def _progress(self, percent: int) -> None:
         ota_state.update_state(download_progress=percent)
 
+    def _pending_version(self) -> str:
+        pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
+        try:
+            with open(pending_file, "r", encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError:
+            return ""
+
     def _fetch_remote_metadata(self):
         """Download and validate remote metadata.json. Returns (client, metadata)."""
         self.cfg = ota_config.load_config()
@@ -108,11 +116,22 @@ class OtaUpdater:
 
         installed = settings_functions.get_software_version()
         remote_version = metadata["firmware_version"]
-        ota_state.mark_check_complete(available_version=remote_version)
+        current_state = ota_state.load_state()
 
         if not is_newer(remote_version, installed):
+            ota_state.mark_check_complete(available_version=remote_version)
             logger.info("OTA up to date (installed=%s remote=%s)", installed, remote_version)
             return ota_state.public_view()
+
+        if (
+            current_state.get("status") == "pending_reboot"
+            and current_state.get("available_version") == remote_version
+        ) or self._pending_version() == remote_version:
+            logger.info("OTA update %s already pending reboot", remote_version)
+            ota_state.mark_pending_reboot(remote_version)
+            return ota_state.public_view()
+
+        ota_state.mark_check_complete(available_version=remote_version)
 
         allowed, block_reason = UpdateCoordinator.can_begin(UpdateSource.OTA)
         if not allowed:
