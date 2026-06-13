@@ -111,6 +111,19 @@ class UpdateCoordinator:
         phase = session.get("phase", "idle")
         if phase in ("idle", "", "pending_confirm"):
             return False
+        if session.get("source") == UpdateSource.OTA.value:
+            try:
+                from ttne.ota import state as ota_state
+
+                if ota_state.load_state().get("status") in (
+                    "downloading",
+                    "verifying",
+                    "installing",
+                    "pending_reboot",
+                ):
+                    return False
+            except Exception:
+                logger.exception("Could not inspect OTA state while reconciling session")
         if cls.installer_busy():
             return False
         logger.warning(

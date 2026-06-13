@@ -623,7 +623,6 @@ def get_update_status(refresh: bool = False):
     from ttne.ota.updater import run_peek
     from ttne.update.coordinator import UpdateCoordinator
 
-    is_pending = _is_update_pending()
     auto_update, update_server = _read_update_config()
     ota_cfg = ota_config.load_config()
     channel = UpdateCoordinator.public_status()
@@ -638,6 +637,8 @@ def get_update_status(refresh: bool = False):
             ota_view = ota_state.public_view()
     except Exception:
         logger.exception("Failed to sync installed_version with system-info")
+
+    is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"
 
     # "checking" is only a metadata fetch. If a previous process dies after
     # setting it, allowing another peek lets the status repair itself to idle.
@@ -759,8 +760,6 @@ def confirm_update(confirm):
         else:
             UpdateCoordinator.set_phase("installing", firmware_path=firmware_path)
             utils.schedule_in(5, utils.shell("/usr/bin/usb_autorun.sh run " + firmware_path))
-        if source == UpdateSource.OTA.value:
-            ota_state.update_state(status="pending_reboot")
     else:
         logger.info("User rejected %s update", source or "unknown")
         if os.path.isfile(firmware_path):

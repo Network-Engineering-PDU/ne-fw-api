@@ -3,9 +3,10 @@
 import hashlib
 import logging
 import os
+import subprocess
+import threading
 from typing import Any, Dict
 
-from ttne import utils
 from ttne.app.settings import functions as settings_functions
 from ttne.config import Config
 from ttne.update.coordinator import UpdateCoordinator, UpdateSource
@@ -39,6 +40,20 @@ class OtaUpdater:
 
     def _progress(self, percent: int) -> None:
         ota_state.update_state(download_progress=percent)
+
+    def _schedule_installer(self, staging_path: str) -> None:
+        cmd = "/usr/bin/usb_autorun.sh run " + staging_path
+
+        def _run():
+            subprocess.Popen(
+                cmd,
+                shell=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+            )
+
+        threading.Timer(5, _run).start()
 
     def _pending_version(self) -> str:
         pending_file = os.path.join(ota_state.OTA_DIR, "pending_version")
@@ -101,6 +116,7 @@ class OtaUpdater:
         if not staging:
             staging = UpdateCoordinator.ensure_staging_dir(UpdateSource.OTA)
 
+        UpdateCoordinator.set_phase("staging", firmware_path=staging)
         ota_state.set_status("downloading", download_progress=0)
         client = create_client(self.cfg)
         client.download_firmware(
@@ -118,8 +134,7 @@ class OtaUpdater:
         UpdateCoordinator.set_phase("installing", firmware_path=staging)
         ota_state.set_status("installing")
         self._save_pending_version(metadata["firmware_version"])
-        utils.schedule_in(5, utils.shell(
-            "/usr/bin/usb_autorun.sh run " + staging))
+        self._schedule_installer(staging)
         ota_state.update_state(
             status="pending_reboot",
             available_version=metadata["firmware_version"],
@@ -180,7 +195,22 @@ class OtaUpdater:
         can_check, reason = UpdateCoordinator.can_check_ota()
         if not can_check:
             logger.info("OTA check deferred: %s", reason)
-            ota_state.set_status("idle", reason)
+            current = ota_state.load_state()
+            if current.get("status") in (
+                "pending_confirm",
+                "downloading",
+                "verifying",
+                "installing",
+                "pending_reboot",
+            ):
+                ota_state.update_state(last_error=reason)
+            elif (
+                UpdateCoordinator.active_source() == UpdateSource.OTA.value
+                and UpdateCoordinator.active_phase() in ("staging", "installing")
+            ):
+                ota_state.update_state(status="pending_reboot", last_error=reason)
+            else:
+                ota_state.set_status("idle", reason)
             return ota_state.public_view()
 
         ota_state.set_status("checking")
@@ -275,13 +305,18 @@ class OtaUpdater:
     def _install_firmware(self, staging_path: str, new_version: str) -> None:
         """Install firmware using the existing signed update pipeline."""
         UpdateCoordinator.set_phase("installing", firmware_path=staging_path)
-        utils.schedule_in(5, utils.shell(
-            "/usr/bin/usb_autorun.sh run " + staging_path))
+        self._schedule_installer(staging_path)
         ota_state.update_state(status="pending_reboot", available_version=new_version)
 
     def run_pending_update(self) -> Dict[str, Any]:
         self.cfg = ota_config.load_config()
-        return self._install_pending_update()
+        try:
+            return self._install_pending_update()
+        except Exception as exc:
+            logger.error("OTA pending update failed: %s", exc)
+            UpdateCoordinator.end(UpdateSource.OTA, success=False)
+            ota_state.set_status("failed", str(exc), download_progress=0)
+            return ota_state.public_view()
 
 
 def run_check() -> Dict[str, Any]:
