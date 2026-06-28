@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "provider": "github_repo",
-  "check_interval_hours": 24,
+  "check_interval_hours": 168,
   "metadata_filename": "metadata.json",
   "github_owner": "Network-Engineering-PDU",
   "github_repo": "firmware-update",

@@ -578,7 +578,7 @@ async def read_modbus() -> int:
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
 BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
-DEFAULT_AUTO_UPDATE = True
+DEFAULT_AUTO_UPDATE = False
 DEFAULT_BLUETOOTH_POWERED = True
 
 
@@ -692,7 +692,7 @@ def get_update_status(refresh: bool = False):
         "ota_status": ota_view.get("status", "idle"),
         "last_error": ota_view.get("last_error", ""),
         "download_progress": ota_view.get("download_progress", 0),
-        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 24)),
+        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 168)),
         "ota_enabled": bool(ota_cfg.get("enabled", True)),
         "ota_provider": provider_name(ota_cfg),
         "active_update_source": channel.get("active_update_source", ""),
@@ -702,7 +702,7 @@ def get_update_status(refresh: bool = False):
     }
 
 
-def set_update_settings(auto_update, server, check_interval_hours=24,
+def set_update_settings(auto_update, server, check_interval_hours=168,
         ota_enabled=True):
     """Set auto-update flag, server address, and OTA options."""
     from ttne.ota import config as ota_config
@@ -711,7 +711,7 @@ def set_update_settings(auto_update, server, check_interval_hours=24,
     cfg = ota_config.load_config()
     cfg["enabled"] = ota_enabled
     if check_interval_hours not in (1, 24, 168, 720):
-        check_interval_hours = 24
+        check_interval_hours = 168
     cfg["check_interval_hours"] = check_interval_hours
     ota_config.save_config(cfg)
     logger.info(

@@ -69,7 +69,7 @@ class UpdateStatus(BaseModel):
     ota_status: str = "idle"
     last_error: str = ""
     download_progress: int = 0
-    check_interval_hours: int = 24
+    check_interval_hours: int = 168
     ota_enabled: bool = True
     ota_provider: str = "github_repo"
     active_update_source: str = ""
@@ -81,7 +81,7 @@ class UpdateStatus(BaseModel):
 class UpdateSettings(BaseModel):
     auto_update: bool
     update_server: str
-    check_interval_hours: int = 24
+    check_interval_hours: int = 168
     ota_enabled: bool = True
 
 

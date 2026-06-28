@@ -258,6 +258,15 @@ class OtaUpdater:
 
         auto_update, _ = settings_functions._read_update_config()
 
+        if not auto_update:
+            logger.info(
+                "OTA update available but automatic updates are disabled: %s -> %s",
+                installed,
+                remote_version,
+            )
+            ota_state.mark_check_complete(available_version=remote_version)
+            return ota_state.public_view()
+
         allowed, block_reason = UpdateCoordinator.can_begin(UpdateSource.OTA)
         if not allowed:
             logger.info("OTA install deferred: %s", block_reason)
@@ -267,11 +276,7 @@ class OtaUpdater:
             )
             return ota_state.public_view()
 
-        if auto_update:
-            return self._prepare_pending_update(metadata)
-
-        logger.info("OTA update available: %s -> %s", installed, remote_version)
-        return self._perform_update(client, metadata)
+        return self._prepare_pending_update(metadata)
 
     def _perform_update(self, client, metadata: Dict[str, Any]) -> Dict[str, Any]:
         firmware_name = metadata["firmware_file"]
