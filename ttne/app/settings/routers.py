@@ -20,7 +20,7 @@ def _load_pdu_info() -> float:
                 return float(value)
     except (FileNotFoundError, OSError, ValueError):
         pass
-    return 32.0
+    return 16.0
 
 
 def _save_pdu_info(rated_current: float):
