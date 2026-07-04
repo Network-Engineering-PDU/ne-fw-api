@@ -656,7 +656,17 @@ def get_update_status(refresh: bool = False):
         and (refresh or not ota_view.get("last_check_time"))
     )
     if should_peek:
-        ota_view = run_peek()
+        # Run the potentially slow network 'peek' in background so a
+        # caller (web UI) doesn't block if external servers (e.g. GitHub)
+        # are unreachable. The background task will update OTA state when
+        # complete; return the current view immediately.
+        def _bg_peek():
+            try:
+                run_peek()
+            except Exception:
+                logger.exception("Background OTA peek failed")
+
+        threading.Thread(target=_bg_peek, name="ota-peek-bg", daemon=True).start()
 
     channel = UpdateCoordinator.public_status()
     is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"
