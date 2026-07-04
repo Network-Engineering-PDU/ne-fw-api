@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+import socket
 import subprocess
 import threading
 from typing import Any, Dict
@@ -19,6 +20,26 @@ from .version_compare import is_newer, parse_version
 logger = logging.getLogger(__name__)
 
 REQUIRED_METADATA_FIELDS = ("firmware_version", "firmware_file", "sha256")
+OFFLINE_MESSAGE = "Internet connection unavailable; GitHub OTA check skipped"
+INTERNET_PROBE_TARGETS = (
+    ("1.1.1.1", 443),
+    ("8.8.8.8", 443),
+)
+
+
+class InternetUnavailable(RuntimeError):
+    pass
+
+
+def internet_available(timeout: float = 1.0) -> bool:
+    """Check generic internet reachability without contacting GitHub."""
+    for host, port in INTERNET_PROBE_TARGETS:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class OtaUpdater:
@@ -157,6 +178,9 @@ class OtaUpdater:
         if not can_check:
             raise RuntimeError(reason)
 
+        if not internet_available():
+            raise InternetUnavailable(OFFLINE_MESSAGE)
+
         client = create_client(self.cfg)
         metadata = client.fetch_metadata(self.cfg["metadata_filename"])
         self._validate_metadata(metadata)
@@ -174,6 +198,15 @@ class OtaUpdater:
             remote_version = metadata["firmware_version"]
             ota_state.mark_check_complete(available_version=remote_version)
             logger.info("OTA metadata peek: remote version %s", remote_version)
+            return ota_state.public_view()
+        except InternetUnavailable as exc:
+            logger.info("OTA metadata peek skipped: %s", exc)
+            ota_state.update_state(
+                last_check_time=ota_state._utc_now(),
+                status="idle",
+                last_error=str(exc),
+                download_progress=0,
+            )
             return ota_state.public_view()
         except (RemoteError, ValueError, OSError, RuntimeError) as exc:
             logger.error("OTA metadata peek failed: %s", exc)
@@ -219,6 +252,15 @@ class OtaUpdater:
             if metadata is None:
                 logger.info("OTA disabled in config")
                 return ota_state.public_view()
+        except InternetUnavailable as exc:
+            logger.info("OTA check skipped: %s", exc)
+            ota_state.update_state(
+                last_check_time=ota_state._utc_now(),
+                status="idle",
+                last_error=str(exc),
+                download_progress=0,
+            )
+            return ota_state.public_view()
         except (RemoteError, ValueError, OSError, RuntimeError) as exc:
             logger.error("OTA metadata check failed: %s", exc)
             ota_state.set_status("failed", str(exc))

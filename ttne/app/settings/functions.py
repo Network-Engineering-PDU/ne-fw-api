@@ -715,10 +715,20 @@ def set_update_settings(auto_update, server, check_interval_hours=24,
 
 def run_ota_check_now():
     from ttne.ota import state as ota_state
-    from ttne.ota.updater import run_check
+    from ttne.ota.updater import OFFLINE_MESSAGE, internet_available, run_check
 
     logger.info("Manual OTA check requested")
     global OTA_CHECK_THREAD
+
+    if not internet_available():
+        logger.info("Manual OTA check skipped: %s", OFFLINE_MESSAGE)
+        ota_state.update_state(
+            last_check_time=ota_state._utc_now(),
+            status="idle",
+            last_error=OFFLINE_MESSAGE,
+            download_progress=0,
+        )
+        return ota_state.public_view()
 
     def _run_check_bg():
         try:
