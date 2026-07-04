@@ -35,6 +35,7 @@ class Pmb:
         self.pdu = pdu
         self.uart = uart
         self.measure_flag = False
+        self.read_task = None
         self.branch = None
         self.sys_type = None
         self.curr_type = None
@@ -222,36 +223,56 @@ class Pmb:
 
     async def _read(self):
         while self.measure_flag:
-            msg = self.uart.readline(timeout=0.1)
-            if msg == None or msg == "":
+            try:
+                msg = self.uart.readline(timeout=0.1)
+                if msg is None or msg == "":
+                    continue
+                if msg[0] != ":":
+                    continue
+                decoded_data = self.decode_msg(msg)
+                if decoded_data is None:
+                    logger.warning("Failed to decode PMB message")
+                    continue
+                line_id = self.update_data(decoded_data)
+                if line_id is None:
+                    logger.warning("Failed to update PMB data")
+                    continue
+            except Exception:
+                logger.exception("PMB input read failed; continuing acquisition")
+                await asyncio.sleep(0.5)
                 continue
-            if msg[0] != ":":
-                pass # For see PMB log
-                # logger.debug(f"pmb_log: {msg}")
-                continue
-            decoded_data = self.decode_msg(msg)
-            if decoded_data is None:
-                logger.warning("Failed to decode PMB message")
-                continue
-            line_id = self.update_data(decoded_data)
-            if line_id is None:
-                logger.warning("Failed to update PMB data")
-                continue
+
             # Read all OMs in this line and calc its data
             await asyncio.sleep(0.5) # Wait for OM measure
-            om_devices = self.pdu.get_om()
-            for om_idx, om in om_devices.items():
-                if om.vline_id == line_id:
-                    await om.get_metrics()
-                    await om.get_fuse()
-                    await om.get_connector()
-                    pmb_data = self.data[line_id]
-                    om.om_calc(pmb_data["v"], pmb_data["f"], pmb_data["v_ph"])
-                if decoded_data["op"] == 'C' and om_idx == 0:
-                    pmb_sync = decoded_data["sync_count"]
-                    om_sync = await om.get_sync_counter()
-                    logger.debug(f"SYNC pmb: {pmb_sync} om: {om_sync}")
+            try:
+                om_devices = self.pdu.get_om()
+                for om_idx, om in om_devices.items():
+                    if om.vline_id == line_id:
+                        await om.get_metrics()
+                        await om.get_fuse()
+                        await om.get_connector()
+                        pmb_data = self.data[line_id]
+                        om.om_calc(pmb_data["v"], pmb_data["f"], pmb_data["v_ph"])
+                    if decoded_data["op"] == 'C' and om_idx == 0:
+                        pmb_sync = decoded_data["sync_count"]
+                        om_sync = await om.get_sync_counter()
+                        logger.debug(f"SYNC pmb: {pmb_sync} om: {om_sync}")
+            except Exception:
+                logger.exception(
+                    "OM refresh failed for PMB line %d; input acquisition continues",
+                    line_id,
+                )
             await asyncio.sleep(0.1)
+
+    def _read_done(self, task):
+        if self.read_task is task:
+            self.read_task = None
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self.measure_flag = False
+            logger.error("PMB acquisition task stopped unexpectedly: %s", error)
 
     def get_uart_resp(self):
         while True:
@@ -296,18 +317,24 @@ class Pmb:
                 "curr_type": self.curr_type}
 
     def start_measure(self):
+        if self.measure_flag and self.read_task is not None and not self.read_task.done():
+            return 0
+
         self.uart.clean()
         cmd = UartOpcodes.UART_OP_START
         self.uart.send_msg(bytearray(cmd.encode('utf-8')))
         resp, data = self.get_uart_resp()
-        start = -1
-        if resp != None:
-            start = data
-            logger.info(f"PMB start: {start} (resp: {resp})")
         if resp == UartRsp.UART_RSP_SUCCESS:
             self.measure_flag = True
-            asyncio.create_task(self._read())
-        return start
+            self.read_task = asyncio.create_task(self._read())
+            self.read_task.add_done_callback(self._read_done)
+            logger.info("PMB measurement acquisition started (resp=%s, data=%s)",
+                        resp, data)
+            return 0
+
+        self.measure_flag = False
+        logger.error("PMB measurement start failed (resp=%s, data=%s)", resp, data)
+        return -1
 
     def reset(self):
         self.uart.clean()

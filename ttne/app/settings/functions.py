@@ -633,11 +633,10 @@ def _set_update_pending(pending):
 
 
 def get_update_status(refresh: bool = False):
-    """Get current update status"""
+    """Return cached update status without blocking on remote I/O."""
     from ttne.ota import config as ota_config
     from ttne.ota import state as ota_state
     from ttne.ota.remote import provider_name
-    from ttne.ota.updater import run_peek
     from ttne.update.coordinator import UpdateCoordinator
 
     auto_update, update_server = _read_update_config()
@@ -661,19 +660,10 @@ def get_update_status(refresh: bool = False):
     except Exception:
         logger.exception("Failed to sync installed_version with system-info")
 
-    # "checking" is only a metadata fetch. If a previous process dies after
-    # setting it, allowing another peek lets the status repair itself to idle.
-    active_ota_statuses = (
-        "pending_confirm", "downloading", "verifying", "installing",
-        "pending_reboot",
-    )
-    should_peek = (
-        ota_cfg.get("enabled", True)
-        and ota_view.get("status") not in active_ota_statuses
-        and (refresh or not ota_view.get("last_check_time"))
-    )
-    if should_peek:
-        ota_view = run_peek()
+    if refresh:
+        logger.info(
+            "Ignoring synchronous update-status refresh; use ota-check-now"
+        )
 
     channel = UpdateCoordinator.public_status()
     is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"

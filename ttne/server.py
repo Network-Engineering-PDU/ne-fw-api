@@ -69,14 +69,20 @@ class Server:
         os.makedirs(config.TTNE_DIR, exist_ok=True)
 
     def exit_trap(self):
-        logger.warning("Loop not yet initialized. Cannot stop now")
-        #TODO create task to wait and send SIGINT
+        if not hasattr(self, "loop") or not self.loop.is_running():
+            logger.warning("Loop not yet initialized. Cannot stop now")
+            return
+        logger.info("Scheduling graceful server shutdown")
+        self.loop.call_soon_threadsafe(
+            lambda: self.loop.create_task(self.clean_exit())
+        )
 
     async def clean_exit(self):
         logger.info("Waiting processes to stop")
         if self.pdu_sender:
             self.pdu_sender.stop()
-        await self.ne.stop()
+        if self.ne:
+            await self.ne.stop()
         await asyncio.sleep(1)
         try:
             pmb = PDU.get_pmb()
@@ -160,14 +166,15 @@ class Server:
             pmb = PDU.get_pmb()
             logger.debug("Starting PMB measures")
             await asyncio.sleep(5)
-            resp = pmb.start_measure()
-            if resp != -1:
-                logger.info("PMB measures started")
-            else:
-                logger.error("PMB measures error")
-        except:
-            logger.error("Uart not present")
-            #TODO exit or something??
+            for attempt in range(1, 4):
+                if pmb.start_measure() == 0:
+                    logger.info("PMB measures started on attempt %d", attempt)
+                    return
+                logger.warning("PMB measurement start attempt %d failed", attempt)
+                await asyncio.sleep(2)
+            logger.error("PMB measures could not be started after 3 attempts")
+        except Exception:
+            logger.exception("Could not start PMB measurements")
 
     async def start_services(self):
         global PDU
