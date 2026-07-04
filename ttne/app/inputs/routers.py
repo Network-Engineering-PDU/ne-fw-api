@@ -31,18 +31,12 @@ async def get_inputs() -> List[models.Input]:
 @router.get("/status")
 async def get_status() -> int: #TODO: change output type
     pmb = PDU.get_pmb()
-    if pmb is None:
-        logger.warning("PMB not initialized")
-        return 0
     resp = pmb.get_status()
     return resp
 
 @router.get("/fw-version")
 async def get_fw_version() -> Union[models.InputFwVersion, None]:
     pmb = PDU.get_pmb()
-    if pmb is None:
-        logger.warning("PMB not initialized")
-        return models.InputFwVersion(major=0, minor=0, fix=0)
     fw_ver = version.parse(pmb.get_fw_version())
     logger.info(f"PMB FW version: {str(fw_ver)}")
     return models.InputFwVersion(major=fw_ver.major, minor=fw_ver.minor,
@@ -51,9 +45,6 @@ async def get_fw_version() -> Union[models.InputFwVersion, None]:
 @router.get("/switches")
 async def get_switches() -> Union[models.InputSw, None]:
     pmb = PDU.get_pmb()
-    if pmb is None:
-        logger.warning("PMB not initialized, returning default switches configuration")
-        return models.InputSw(branch=0, sys_type=0, curr_type=0)
     sw = pmb.get_switches()
     return models.InputSw(
             branch=sw["branch"],
@@ -63,18 +54,12 @@ async def get_switches() -> Union[models.InputSw, None]:
 @router.get("/start")
 async def start_measure() -> int:
     pmb = PDU.get_pmb()
-    if pmb is None:
-        logger.warning("PMB not initialized, cannot start measurements")
-        return 1
     resp = pmb.start_measure()
     return resp
 
 @router.get("/stop")
 async def stop_measure() -> int:
     pmb = PDU.get_pmb()
-    if pmb is None:
-        logger.warning("PMB not initialized, cannot stop measurements")
-        return 1
     resp = await pmb.stop_measure()
     return resp
 
@@ -85,19 +70,6 @@ async def get_data(line_id: int,
         response.status_code = 404
         return
     pmb = PDU.get_pmb()
-    if pmb is None:
-        logger.warning("PMB not initialized, returning zero power data")
-        return models.InputData(
-            voltage=0.0,
-            current=0.0,
-            active_power=0.0,
-            reactive_power=0.0,
-            apparent_power=0.0,
-            power_factor=0.0,
-            phase=0.0,
-            frequency=0.0,
-            energy=0.0,
-        )
     data = pmb.get_pmb_data()[line_id]
 
     (

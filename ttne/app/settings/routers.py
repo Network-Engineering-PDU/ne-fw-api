@@ -80,7 +80,7 @@ async def post_system_reboot():
 
 @router.post("/factory-reset")
 async def post_factory_reset():
-    await functions.factory_reset()
+    functions.factory_reset()
 
 pdu_profiles = [
     models.PduProfile(id=1, datetime=dt.now().strftime("%Y-%m-%d %H:%M:%S"))

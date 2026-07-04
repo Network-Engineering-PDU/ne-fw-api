@@ -14,7 +14,7 @@ OTA_CONFIG_FILE = os.path.join(Config.TTNE_DIR, "ota_config.json")
 DEFAULTS = {
     "enabled": True,
     "provider": "github_repo",
-    "check_interval_hours": 168,
+    "check_interval_hours": 24,
     "metadata_filename": "metadata.json",
     "staging_firmware": os.path.join(Config.TTNE_DIR, "ota", "downloads", "firmware.bin"),
     "github_owner": "Network-Engineering-PDU",
@@ -50,7 +50,7 @@ def save_config(cfg: Dict[str, Any]) -> None:
 
 
 def check_interval_seconds(cfg: Dict[str, Any]) -> int:
-    hours = int(cfg.get("check_interval_hours", 168))
+    hours = int(cfg.get("check_interval_hours", 24))
     if hours not in (1, 24, 168, 720):
-        hours = 168
+        hours = 24
     return hours * 3600

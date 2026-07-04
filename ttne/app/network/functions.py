@@ -11,9 +11,6 @@ from . import models
 logger = logging.getLogger(__name__)
 
 SERVICES_FILE = "/home/root/.ne/services"
-DEFAULT_SSH_ENABLED = False
-DEFAULT_SNMP_ENABLED = False
-DEFAULT_MODBUS_ENABLED = False
 
 async def get_iface_mac(iface: str) -> str:
     retval, output = await utils.shell(f"ip address show dev {iface}")
@@ -110,11 +107,7 @@ async def read_services():
     logger.info("Reading services")
     if not os.path.isfile(SERVICES_FILE):
         logger.warning("NO SERVICES FILE, CREATING A DEFAULT ONE")
-        await write_services(
-            DEFAULT_SSH_ENABLED,
-            DEFAULT_SNMP_ENABLED,
-            DEFAULT_MODBUS_ENABLED,
-        )
+        await write_services(1, 0, 0)
     with open(SERVICES_FILE, 'r+') as f:
         line = f.readline()
         if line[-1] == "\n":

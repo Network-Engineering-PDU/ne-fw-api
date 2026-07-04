@@ -8,6 +8,7 @@ import fnmatch
 import pickle
 import base64
 import json
+import shlex
 import threading
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
@@ -156,48 +157,30 @@ def reboot():
     logger.info("Rebooting...")
     utils.schedule_in(5, utils.shell("reboot"))
 
-def _remove_path(path):
-    try:
-        if os.path.isdir(path) and not os.path.islink(path):
-            shutil.rmtree(path)
-        else:
-            os.remove(path)
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"Could not remove {path}: {e}")
-
-def _reset_persistent_files():
-    from ttne.ota import config as ota_config
-
-    state_paths = (
-        Config.TTNE_DIR,
-        "/home/root/autowork",
-        "/home/root/snmp",
-        "/home/root/certs",
-        SWUPDATE_FILE,
-    )
-    for path in state_paths:
-        _remove_path(path)
-
-    os.makedirs(Config.TTNE_DIR, exist_ok=True)
-    os.makedirs(os.path.join(Config.TTNE_DIR, "logs"), exist_ok=True)
-    _write_update_config(DEFAULT_AUTO_UPDATE, "")
-    ota_config.save_config({})
-    _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
-
-async def factory_reset():
+def factory_reset():
     logger.info("Factory reset")
     logger.info("Resetting network settings and restoring system defaults before reboot...")
+    from ttne.ota import config as ota_config
 
     try:
-        await nw_functions.reset_network_config()
+        asyncio.create_task(nw_functions.reset_network_config())
     except Exception as e:
-        logger.warning(f"Network reset failed during factory reset: {e}")
+        logger.warning(f"Network reset task failed: {e}")
 
-    await asyncio.to_thread(_reset_persistent_files)
-    await utils.shell("sync")
-    utils.schedule_in(5, utils.shell("reboot"))
+    home_dir = os.path.expanduser("~/")
+    default_ota_config = shlex.quote(
+        json.dumps(ota_config.DEFAULTS, indent=2, sort_keys=True) + "\n"
+    )
+    cleanup_cmd = (
+        f"rm -rf {home_dir}/* {home_dir}/.[!.]* {home_dir}/..?*; "
+        f"mkdir -p {os.path.dirname(UPDATE_CONFIG_FILE)}; "
+        f"printf 'true\\n\\n' > {UPDATE_CONFIG_FILE}; "
+        f"printf %s {default_ota_config} > {ota_config.OTA_CONFIG_FILE}; "
+        f"mkdir -p {os.path.dirname(BLUETOOTH_CONFIG_FILE)}; "
+        f"printf 'true\\n' > {BLUETOOTH_CONFIG_FILE}; "
+        "reboot"
+    )
+    utils.schedule_in(5, utils.shell(cleanup_cmd))
 
 async def start_scan():
     logger.info("Start scan")
@@ -578,7 +561,7 @@ async def read_modbus() -> int:
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
 BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
-DEFAULT_AUTO_UPDATE = False
+DEFAULT_AUTO_UPDATE = True
 DEFAULT_BLUETOOTH_POWERED = True
 
 
@@ -633,10 +616,11 @@ def _set_update_pending(pending):
 
 
 def get_update_status(refresh: bool = False):
-    """Return cached update status without blocking on remote I/O."""
+    """Get current update status"""
     from ttne.ota import config as ota_config
     from ttne.ota import state as ota_state
     from ttne.ota.remote import provider_name
+    from ttne.ota.updater import run_peek
     from ttne.update.coordinator import UpdateCoordinator
 
     auto_update, update_server = _read_update_config()
@@ -660,10 +644,19 @@ def get_update_status(refresh: bool = False):
     except Exception:
         logger.exception("Failed to sync installed_version with system-info")
 
-    if refresh:
-        logger.info(
-            "Ignoring synchronous update-status refresh; use ota-check-now"
-        )
+    # "checking" is only a metadata fetch. If a previous process dies after
+    # setting it, allowing another peek lets the status repair itself to idle.
+    active_ota_statuses = (
+        "pending_confirm", "downloading", "verifying", "installing",
+        "pending_reboot",
+    )
+    should_peek = (
+        ota_cfg.get("enabled", True)
+        and ota_view.get("status") not in active_ota_statuses
+        and (refresh or not ota_view.get("last_check_time"))
+    )
+    if should_peek:
+        ota_view = run_peek()
 
     channel = UpdateCoordinator.public_status()
     is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"
@@ -682,7 +675,7 @@ def get_update_status(refresh: bool = False):
         "ota_status": ota_view.get("status", "idle"),
         "last_error": ota_view.get("last_error", ""),
         "download_progress": ota_view.get("download_progress", 0),
-        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 168)),
+        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 24)),
         "ota_enabled": bool(ota_cfg.get("enabled", True)),
         "ota_provider": provider_name(ota_cfg),
         "active_update_source": channel.get("active_update_source", ""),
@@ -692,7 +685,7 @@ def get_update_status(refresh: bool = False):
     }
 
 
-def set_update_settings(auto_update, server, check_interval_hours=168,
+def set_update_settings(auto_update, server, check_interval_hours=24,
         ota_enabled=True):
     """Set auto-update flag, server address, and OTA options."""
     from ttne.ota import config as ota_config
@@ -701,7 +694,7 @@ def set_update_settings(auto_update, server, check_interval_hours=168,
     cfg = ota_config.load_config()
     cfg["enabled"] = ota_enabled
     if check_interval_hours not in (1, 24, 168, 720):
-        check_interval_hours = 168
+        check_interval_hours = 24
     cfg["check_interval_hours"] = check_interval_hours
     ota_config.save_config(cfg)
     logger.info(

@@ -95,7 +95,7 @@ Example config (`docs/examples/ota_config.json`):
 {
   "enabled": true,
   "provider": "github_repo",
-  "check_interval_hours": 168,
+  "check_interval_hours": 24,
   "metadata_filename": "metadata.json",
   "github_owner": "Network-Engineering-PDU",
   "github_repo": "firmware-update",
@@ -174,7 +174,7 @@ Must be the existing signed CPIO package (`ttfile.bin` format) consumed by `usb_
 }
 ```
 
-`check_interval_hours` must be `1`, `24`, `168`, or `720`.
+`check_interval_hours` must be `1` or `24`.
 
 ## 4. Version comparison logic
 
@@ -195,9 +195,7 @@ is_newer = Version(remote) > Version(local)
 ## 5. Linux daemon design
 
 - **Process**: `ttne-ota` (forking daemon, PID file at `/home/root/.ne/ota/ttne-ota.pid`)
-- **Loop**: `run_check()` → sleep `check_interval_hours` → repeat. The sleep
-  re-reads configuration every 5 seconds so interval changes take effect without
-  restarting the service.
+- **Loop**: sleep `check_interval_hours` → `run_check()` → repeat
 - **Logging**: `~/.ne/logs/log` (shared RotatingFileHandler with `ttnedaemon`)
 - **CLI**:
   - `ttne-ota start` — start daemon
@@ -349,7 +347,7 @@ sequenceDiagram
 
 - [ ] Use a read-only GitHub token scoped to one repository
 - [ ] Rotate GitHub PATs annually
-- [ ] Use the default `check_interval_hours: 168` in production unless urgent rollout
+- [ ] Use `check_interval_hours: 24` in production unless urgent rollout
 - [ ] Monitor `ota_state.json` `last_error` via SNMP / web UI
 - [ ] Keep `public.pem` in read-only rootfs
 - [ ] Disable OTA on development units (`"enabled": false`)
@@ -362,9 +360,7 @@ sequenceDiagram
 4. **Enable services**: `systemctl enable --now ttne-ota`.
 5. **Publish release**: Push `firmware.bin` + `metadata.json` to GitHub.
 6. **Verify**: Web UI → Settings → OTA section → "Check now".
-7. **Confirm**: If `auto_update` is true in `update_config`, confirm on the
-   PDU display. If it is false, periodic checks report the available version
-   without downloading or installing it.
+7. **Confirm**: If `auto_update` is true in `update_config`, confirm on PDU display; else install runs immediately.
 
 ### Publishing workflow (CI)
 

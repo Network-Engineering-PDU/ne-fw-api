@@ -24,22 +24,6 @@ def _handle_signal(signum, _frame):
     _running = False
 
 
-def _sleep_until_due(interval: int, enabled: bool) -> None:
-    """Sleep in short slices so runtime setting changes take effect promptly."""
-    slept = 0
-    while _running and slept < interval:
-        sleep_seconds = min(5, interval - slept)
-        time.sleep(sleep_seconds)
-        slept += sleep_seconds
-
-        cfg = ota_config.load_config()
-        new_enabled = bool(cfg.get("enabled", True))
-        interval = ota_config.check_interval_seconds(cfg)
-        if not enabled and new_enabled:
-            return
-        enabled = new_enabled
-
-
 def run_loop() -> None:
     global _running
     utils.config_logger()
@@ -58,7 +42,10 @@ def run_loop() -> None:
         else:
             logger.debug("OTA checks disabled, sleeping %ss", interval)
 
-        _sleep_until_due(interval, bool(cfg.get("enabled", True)))
+        slept = 0
+        while _running and slept < interval:
+            time.sleep(min(5, interval - slept))
+            slept += 5
 
     logger.info("OTA daemon stopped")
 
