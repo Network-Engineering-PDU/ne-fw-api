@@ -652,8 +652,8 @@ def get_update_status(refresh: bool = False):
     )
     should_peek = (
         ota_cfg.get("enabled", True)
+        and refresh
         and ota_view.get("status") not in active_ota_statuses
-        and (refresh or not ota_view.get("last_check_time"))
     )
     if should_peek:
         # Run the potentially slow network 'peek' in background so a

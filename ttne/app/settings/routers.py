@@ -4,6 +4,7 @@ from datetime import datetime as dt
 from typing import List, Union
 
 from fastapi import APIRouter, Response, File, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from ttne.server import PDU
 from ttne.sn_pn_generator import *
@@ -239,7 +240,7 @@ async def get_modbus_addr() -> models.Modbus:
 
 @router.get("/update-status")
 async def get_update_status(refresh: bool = False) -> models.UpdateStatus:
-    status = functions.get_update_status(refresh=refresh)
+    status = await run_in_threadpool(functions.get_update_status, refresh=refresh)
     return models.UpdateStatus(**status)
 
 
@@ -260,4 +261,4 @@ async def post_update_confirm(data: models.UpdateConfirm):
 
 @router.post("/ota-check-now")
 async def post_ota_check_now():
-    return functions.run_ota_check_now()
+    return await run_in_threadpool(functions.run_ota_check_now)

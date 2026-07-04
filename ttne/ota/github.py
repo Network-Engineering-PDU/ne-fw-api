@@ -172,13 +172,16 @@ class GitHubClient:
 
     def _download_release_asset(self, asset: Dict[str, Any], destination: str,
             progress_cb: Optional[Callable[[int], None]] = None) -> None:
-        url = asset.get("url") if self._token() else asset.get("browser_download_url")
+        token = self._token()
+        url = asset.get("url") if token else asset.get("browser_download_url")
         if not url:
             raise GitHubError("release asset has no download URL")
-        headers = self._headers()
-        if self._token() and "api.github.com" in url:
+        headers = {"User-Agent": "ttne-ota"}
+        if token:
+            headers = self._headers()
+        if token and "api.github.com" in url:
             headers["Accept"] = "application/octet-stream"
-        self._download_url(url, destination, progress_cb)
+        self._download_url(url, destination, progress_cb, headers=headers)
 
     def fetch_metadata(self, metadata_name: str) -> Dict[str, Any]:
         if not self.owner or not self.repo:
