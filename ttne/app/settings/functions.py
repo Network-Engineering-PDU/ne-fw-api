@@ -561,7 +561,7 @@ async def read_modbus() -> int:
 UPDATE_CONFIG_FILE = "/home/root/.ne/update_config"
 UPDATE_STATUS_FILE = "/home/root/.ne/update_status"
 BLUETOOTH_CONFIG_FILE = "/home/root/.ne/bluetooth_config"
-DEFAULT_AUTO_UPDATE = True
+DEFAULT_AUTO_UPDATE = False
 DEFAULT_BLUETOOTH_POWERED = True
 
 

@@ -107,7 +107,7 @@ async def read_services():
     logger.info("Reading services")
     if not os.path.isfile(SERVICES_FILE):
         logger.warning("NO SERVICES FILE, CREATING A DEFAULT ONE")
-        await write_services(1, 0, 0)
+        await write_services(0, 0, 0)
     with open(SERVICES_FILE, 'r+') as f:
         line = f.readline()
         if line[-1] == "\n":
