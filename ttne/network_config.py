@@ -80,6 +80,14 @@ class NetworkConfig():
                 return iface
         return None
 
+    async def _get_linked_eth_interfaces(self):
+        linked_ifaces = []
+        for iface in NetworkType.get_available_eth_interfaces():
+            carrier = await utils.read_file(f"/sys/class/net/{iface}/carrier")
+            if carrier.strip() == "1":
+                linked_ifaces.append(iface)
+        return linked_ifaces
+
     async def _ensure_eth_profile_portable(self):
         retval, output = await utils.shell(
             f"nmcli -g connection.interface-name con show {self.ETH_CONN}"
@@ -94,10 +102,42 @@ class NetworkConfig():
                 pinned_iface,
                 self.ETH_CONN,
             )
-            await utils.shell(
-                f"nmcli con modify {self.ETH_CONN} connection.interface-name '' connection.autoconnect yes"
-            )
-            await utils.shell("nmcli con reload")
+
+        await utils.shell(
+            f"nmcli con modify {self.ETH_CONN} connection.interface-name '' connection.autoconnect yes connection.autoconnect-retries 0"
+        )
+        await utils.shell("nmcli con reload")
+
+    async def repair_ethernet_activation(self):
+        retval, _ = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
+        if retval != 0:
+            logger.info("Ethernet profile missing; recreating default profile")
+            await self.save()
+            return
+
+        await self._ensure_eth_profile_portable()
+        linked_ifaces = await self._get_linked_eth_interfaces()
+        active_iface = await self._get_active_eth_if()
+
+        if active_iface in linked_ifaces:
+            return
+
+        if not linked_ifaces:
+            logger.info("No ethernet link detected; taking ethernet profile down")
+            await utils.shell(f"nmcli con down {self.ETH_CONN} || true")
+            return
+
+        target_iface = linked_ifaces[0]
+        logger.info(
+            "Repairing ethernet activation: active=%s linked=%s target=%s",
+            active_iface,
+            ",".join(linked_ifaces),
+            target_iface,
+        )
+        await utils.shell(f"nmcli con down {self.ETH_CONN} || true")
+        await utils.shell(
+            f"nmcli con up {self.ETH_CONN} ifname '{target_iface}' || nmcli con up {self.ETH_CONN} || true"
+        )
 
     async def get_current_ip(self):
         retval, output = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
@@ -158,11 +198,11 @@ class NetworkConfig():
             if self.dns2:
                 dns_value = f"{self.dns1},{self.dns2}"
             retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes"
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes connection.autoconnect-retries 0"
             )
         else:
             retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ipv4.method auto connection.autoconnect yes"
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ipv4.method auto connection.autoconnect yes connection.autoconnect-retries 0"
             )
 
         if activation_ifname:

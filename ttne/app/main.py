@@ -4,11 +4,13 @@ import serial
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ttne import utils
 from ttne.app import inputs
 from ttne.app import outputs
 from ttne.app import settings
 from ttne.app import network
 from ttne.app.settings import functions as settings_functions
+from ttne.network_config import NetworkConfig
 
 from ttne.om import Om
 from ttne.pmb import Pmb
@@ -36,6 +38,8 @@ app.add_middleware(
 @app.on_event("startup")
 async def init_persistent_settings():
     await settings_functions.init_persistent_settings()
+    if config.PLATFORM != "desktop":
+        utils.periodic_task(NetworkConfig().repair_ethernet_activation, 5)
 
 
 app.include_router(inputs.router)
