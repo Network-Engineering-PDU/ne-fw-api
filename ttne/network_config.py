@@ -80,10 +80,29 @@ class NetworkConfig():
                 return iface
         return None
 
+    async def _ensure_eth_profile_portable(self):
+        retval, output = await utils.shell(
+            f"nmcli -g connection.interface-name con show {self.ETH_CONN}"
+        )
+        if retval != 0:
+            return
+
+        pinned_iface = output.strip()
+        if pinned_iface in NetworkType.get_available_eth_interfaces():
+            logger.info(
+                "Clearing pinned ethernet interface %s from %s",
+                pinned_iface,
+                self.ETH_CONN,
+            )
+            await utils.shell(
+                f"nmcli con modify {self.ETH_CONN} connection.interface-name '' connection.autoconnect yes"
+            )
+            await utils.shell("nmcli con reload")
 
     async def get_current_ip(self):
         retval, output = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
         if retval == 0: # Static ethernet is configured
+            await self._ensure_eth_profile_portable()
             self.type = NetworkType.ETH_STATIC
             retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE con show {self.ETH_CONN}")
             if "activated" in output:
