@@ -79,9 +79,11 @@ async def get_ip(iface) -> str:
 
 
 def uptime() -> str:
-    elapsed_time = time.time() - START_TIME
-    # TODO: what if hours > 99? should be: 1284:29; test with start_time -= years=10?
-    return time.strftime("%H:%M", time.gmtime(elapsed_time))
+    elapsed_seconds = max(0, int(time.time() - START_TIME))
+    days = (elapsed_seconds // 86400) % 1000
+    hours = (elapsed_seconds // 3600) % 24
+    minutes = (elapsed_seconds // 60) % 60
+    return f"{days:03d}:{hours:02d}:{minutes:02d}"
 
 
 def get_software_version() -> str:
