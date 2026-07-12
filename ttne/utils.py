@@ -24,7 +24,7 @@ def periodic_task(function, period, *args, **kwargs):
             except:
                 logger.exception(f"Periodic task {function.__name__} ex")
                 raise
-            await asyncio.sleep(max(0, next_time - time.time()))
+            await asyncio.sleep(next_time - time.time())
     return asyncio.create_task(periodic_task_coro(function, period, *args,
         **kwargs))
 

@@ -56,8 +56,6 @@ class UpdateCoordinator:
     def _usb_workdir_active() -> bool:
         if not os.path.isdir(USB_WORKDIR):
             return False
-        if os.path.isfile(os.path.join(USB_WORKDIR, "success")):
-            return False
         for name in os.listdir(USB_WORKDIR):
             if name in (".", ".."):
                 continue
@@ -164,13 +162,9 @@ class UpdateCoordinator:
         return True, ""
 
     @classmethod
-    def can_begin(
-        cls,
-        source: UpdateSource,
-        ignore_installer_busy: bool = False,
-    ) -> Tuple[bool, str]:
+    def can_begin(cls, source: UpdateSource) -> Tuple[bool, str]:
         cls.reconcile_stale_session()
-        if not ignore_installer_busy and cls.installer_busy():
+        if cls.installer_busy():
             return False, "USB update installer is running"
 
         session = cls.load_session()
@@ -199,9 +193,8 @@ class UpdateCoordinator:
         phase: str,
         firmware_path: str = "",
         version: str = "",
-        ignore_installer_busy: bool = False,
     ) -> Tuple[bool, str]:
-        allowed, reason = cls.can_begin(source, ignore_installer_busy=ignore_installer_busy)
+        allowed, reason = cls.can_begin(source)
         if not allowed:
             logger.warning("Cannot begin %s update: %s", source.value, reason)
             return False, reason
@@ -290,12 +283,10 @@ class UpdateCoordinator:
                 return False, f"{active} update is active"
             cls.set_phase("installing", firmware_path=firmware_path)
             return True, ""
-        return cls.begin(
-            source,
-            "installing",
-            firmware_path=firmware_path,
-            ignore_installer_busy=True,
-        )
+        allowed, reason = cls.can_begin(source)
+        if not allowed:
+            return False, reason
+        return cls.begin(source, "installing", firmware_path=firmware_path)
 
     @classmethod
     def finish_install(cls, firmware_path: str, success: bool) -> None:
