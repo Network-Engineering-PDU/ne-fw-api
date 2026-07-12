@@ -23,6 +23,10 @@ class BaseNetworkConfig(BaseModel):
     dhcp: bool
     params: NetworkConfigParams
     eth_interface: Optional[str] = None  # Ethernet port selection: eth0 (ETH-2) or eth1 (ETH-1)
+    nw_mode: int = -1
+    lan1_ip: Optional[str] = None
+    lan2_ip: Optional[str] = None
+    wifi_ip: Optional[str] = None
 
 
 class MacNetworkConfig(BaseNetworkConfig):
