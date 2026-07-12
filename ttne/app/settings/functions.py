@@ -848,13 +848,14 @@ async def init_persistent_settings():
         ota_config.save_config({})
 
     try:
-        ota_view = ota_state.public_view()
-        if ota_view.get("status") not in ("pending_reboot", "pending_confirm"):
-            logger.info("Clearing stale update session after system boot")
-            UpdateCoordinator.clear_session()
+        UpdateCoordinator.reconcile_stale_session()
+        session = UpdateCoordinator.load_session()
+        if session.get("phase") == "pending_confirm":
+            _set_update_pending(True)
+        else:
             _set_update_pending(False)
     except Exception:
-        logger.exception("Failed to initialize OTA boot state")
+        logger.exception("Failed to initialize update session state")
     
     if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
         _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
