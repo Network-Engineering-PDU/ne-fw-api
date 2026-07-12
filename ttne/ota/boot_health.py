@@ -11,8 +11,15 @@ PENDING_VERSION_FILE = os.path.join(state.OTA_DIR, "pending_version")
 
 def mark_success() -> None:
     os.makedirs(state.OTA_DIR, exist_ok=True)
+    pending_version = ""
+    if os.path.isfile(PENDING_VERSION_FILE):
+        with open(PENDING_VERSION_FILE, "r", encoding="utf-8") as fh:
+            pending_version = fh.readline().strip()
+
     with open(BOOT_MARKER, "w", encoding="utf-8") as fh:
         fh.write("ok\n")
+    if pending_version:
+        state.mark_installed(pending_version)
     state.clear_pending_update()
 
 

@@ -56,6 +56,8 @@ class UpdateCoordinator:
     def _usb_workdir_active() -> bool:
         if not os.path.isdir(USB_WORKDIR):
             return False
+        if os.path.isfile(os.path.join(USB_WORKDIR, "success")):
+            return False
         for name in os.listdir(USB_WORKDIR):
             if name in (".", ".."):
                 continue
