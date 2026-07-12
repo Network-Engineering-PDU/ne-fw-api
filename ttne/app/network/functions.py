@@ -124,8 +124,8 @@ async def set_network_config(config: models.BaseNetworkConfig):
     nw_config = NetworkConfig()
     nw_config.type = config.type
     nw_config.nw_mode = getattr(config, 'nw_mode', -1)
-    nw_config.ssid = config.params.ssid
-    nw_config.psk = config.params.password
+    nw_config.ssid = config.params.ssid or ""
+    nw_config.psk = config.params.password or ""
     # Determine which ethernet interface to use. If the API explicitly provides
     # an `eth_interface` use that, otherwise try to auto-detect the active one.
     if getattr(config, 'eth_interface', None):
@@ -158,10 +158,10 @@ async def set_network_config(config: models.BaseNetworkConfig):
             nw_config.lan1_ip
             if nw_config.nw_mode == NetworkConfig.NW_DUAL_LAN
             else config.params.ip
-        )
-        nw_config.mask = config.params.subnet_mask
-        nw_config.gateway = config.params.gateway_ip
-        dnss = config.params.dns.split(',')
+        ) or nw_config.ip
+        nw_config.mask = config.params.subnet_mask or nw_config.mask
+        nw_config.gateway = config.params.gateway_ip or ""
+        dnss = (config.params.dns or "").split(',')
         if len(dnss) > 0:
             nw_config.dns1 = dnss[0]
         if len(dnss) > 1:

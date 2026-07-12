@@ -130,6 +130,16 @@ class NetworkConfig():
                     f"nmcli con modify '{name}' connection.autoconnect no || true"
                 )
 
+    async def _delete_single_eth_connection(self):
+        await utils.shell(f"nmcli con del '{self.ETH_CONN}' || true")
+
+    async def _delete_dual_lan_connections(self):
+        await utils.shell(f"nmcli con del '{self.LAN1_CONN}' || true")
+        await utils.shell(f"nmcli con del '{self.LAN2_CONN}' || true")
+
+    async def _delete_wifi_connection(self):
+        await utils.shell(f"nmcli con del '{self.WIFI_CONN}' || true")
+
     async def _get_active_eth_if(self):
         for iface in NetworkType.get_available_eth_interfaces():
             retval, output = await utils.shell(
@@ -215,6 +225,56 @@ class NetworkConfig():
             f"nmcli con up {self.ETH_CONN} ifname '{target_iface}' || nmcli con up {self.ETH_CONN} || true"
         )
 
+    async def _add_ethernet_connection(self):
+        if self.is_static():
+            iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
+            dns_value = self.dns1
+            if self.dns2:
+                dns_value = f"{self.dns1},{self.dns2}"
+            retval, output = await utils.shell(
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes connection.autoconnect-retries 0"
+            )
+        else:
+            retval, output = await utils.shell(
+                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ipv4.method auto connection.autoconnect yes connection.autoconnect-retries 0"
+            )
+
+    async def _activate_ethernet_connection(self):
+        activation_ifname = self.eth_interface if self.eth_interface else ""
+        if activation_ifname:
+            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{activation_ifname}' || nmcli con up {self.ETH_CONN} || true")
+        else:
+            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} || true")
+
+    async def _add_wifi_connection(self, route_metric=None, force_dhcp=False):
+        if self.ssid is None or self.ssid == "":
+            logger.warning("WiFi SSID is empty; skipping WiFi profile creation")
+            return
+
+        route_metric_arg = ""
+        if route_metric is not None:
+            route_metric_arg = f" ipv4.route-metric {route_metric} ipv6.route-metric {route_metric}"
+
+        if self.is_static() and not force_dhcp:
+            iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
+            gateway_arg = f" gw4 {self.gateway}" if self.gateway else ""
+            dns_value = self.dns1
+            if self.dns2:
+                dns_value = f"{self.dns1},{self.dns2}"
+            dns_arg = f" ipv4.dns '{dns_value}'" if dns_value else ""
+            await utils.shell(
+                f"nmcli connection add type wifi ifname '*' con-name '{self.WIFI_CONN}' ssid '{self.ssid}' ip4 {str(iface_ip)}{gateway_arg}{dns_arg} 802-11-wireless-security.key-mgmt 'wpa-psk' 802-11-wireless-security.psk '{self.psk}' connection.autoconnect yes{route_metric_arg}"
+            )
+        else:
+            await utils.shell(
+                f"nmcli connection add type wifi ifname '*' con-name '{self.WIFI_CONN}' ssid '{self.ssid}' 802-11-wireless-security.key-mgmt 'wpa-psk' 802-11-wireless-security.psk '{self.psk}' connection.autoconnect yes{route_metric_arg}"
+            )
+
+    async def _activate_wifi_connection(self):
+        if self.ssid is None or self.ssid == "":
+            return
+        retval, output = await utils.shell(f"nmcli con up {self.WIFI_CONN} || true")
+
     async def get_current_ip(self):
         if await self._is_dual_lan_configured():
             self.type = NetworkType.ETH_STATIC
@@ -278,42 +338,46 @@ class NetworkConfig():
             return
         retval, output = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
         if retval == 0:
-            self.type = NetworkType.ETH_STATIC
+            retval, output = await utils.shell(f"nmcli -t -f ipv4.method c show {self.ETH_CONN}")
+            if "manual" in output:
+                self.type = NetworkType.ETH_STATIC
+            elif "auto" in output:
+                self.type = NetworkType.ETH_DHCP
 
     async def set_wifi(self):
         logger.info("Set WiFi")
-        await utils.shell(f"nmcli con del '{self.ETH_CONN}' || true")
-        await utils.shell(f"nmcli con del '{self.LAN1_CONN}' || true")
-        await utils.shell(f"nmcli con del '{self.LAN2_CONN}' || true")
-        retval, output = await utils.shell(f"nmcli con del {self.WIFI_CONN}")
-        retval, output = await utils.shell(f"nmcli connection add type wifi ifname '*' con-name '{self.WIFI_CONN}' ssid '{self.ssid}' 802-11-wireless-security.key-mgmt 'wpa-psk' 802-11-wireless-security.psk '{self.psk}' connection.autoconnect yes")
-        retval, output = await utils.shell(f"nmcli con up {self.WIFI_CONN}")
+        await self._delete_single_eth_connection()
+        await self._delete_dual_lan_connections()
+        await self._delete_wifi_connection()
+        await self._add_wifi_connection()
+        await self._activate_wifi_connection()
 
     async def set_ethernet(self):
         logger.info(f"Set Ethernet on interface {self.eth_interface}")
-        # Remove any existing ethernet connection with the configured name
-        retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN} || true")
-        await utils.shell(f"nmcli con del '{self.LAN1_CONN}' || true")
-        await utils.shell(f"nmcli con del '{self.LAN2_CONN}' || true")
-        activation_ifname = self.eth_interface if self.eth_interface else ""
+        await self._delete_single_eth_connection()
+        await self._delete_dual_lan_connections()
+        await self._delete_wifi_connection()
+        await self._add_ethernet_connection()
+        await self._activate_ethernet_connection()
 
-        if self.is_static():
-            iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
-            dns_value = self.dns1
-            if self.dns2:
-                dns_value = f"{self.dns1},{self.dns2}"
-            retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes connection.autoconnect-retries 0"
-            )
-        else:
-            retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ipv4.method auto connection.autoconnect yes connection.autoconnect-retries 0"
-            )
+    async def set_lan_wifi(self):
+        logger.info("Set LAN + WiFi on interface %s and SSID %s", self.eth_interface, self.ssid)
+        await self._delete_single_eth_connection()
+        await self._delete_dual_lan_connections()
+        await self._delete_wifi_connection()
+        await self._add_ethernet_connection()
+        await self._add_wifi_connection(route_metric=600, force_dhcp=True)
 
-        if activation_ifname:
-            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{activation_ifname}' || nmcli con up {self.ETH_CONN} || true")
+        linked_ifaces = await self._get_linked_eth_interfaces()
+        if self.eth_interface in linked_ifaces:
+            await self._activate_ethernet_connection()
+        elif linked_ifaces:
+            self.eth_interface = linked_ifaces[0]
+            await self._activate_ethernet_connection()
         else:
-            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} || true")
+            logger.info("No ethernet link detected while setting LAN + WiFi")
+
+        await self._activate_wifi_connection()
 
     async def set_dual_lan(self):
         logger.info(
@@ -365,7 +429,9 @@ class NetworkConfig():
                 )
 
     async def save(self):
-        if self.is_ethernet() and self.nw_mode == self.NW_DUAL_LAN:
+        if self.nw_mode == self.NW_LAN_WIFI:
+            await self.set_lan_wifi()
+        elif self.is_ethernet() and self.nw_mode == self.NW_DUAL_LAN:
             await self.set_dual_lan()
         elif self.is_ethernet():
             await self.set_ethernet()
