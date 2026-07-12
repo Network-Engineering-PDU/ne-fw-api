@@ -1,10 +1,11 @@
-import os
-
 class Config:
-    VERSION = "0.2.9"
+    VERSION = "0.3.2"
     BOARD_ID = 1
     REV_ID = 1
-    TTNE_DIR = os.path.expanduser("~/.ne")
+    # Hardcoded (not os.path.expanduser("~")): processes launched by udev
+    # rules (physical USB insert) inherit HOME=/ from sysvinit's PID 1, which
+    # resolves "~/.ne" to "/.ne" on the read-only rootfs and crashes.
+    TTNE_DIR = "/home/root/.ne"
     DAEMON_PID_FILE = "/tmp/ttne.pid"
     SERVER_PORT = 8001
     OM_UPDATE_FORCE = 0

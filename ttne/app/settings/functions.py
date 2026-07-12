@@ -835,7 +835,6 @@ def _write_bluetooth_config(powered):
 async def init_persistent_settings():
     """Initialize persistent settings on startup"""
     from ttne.ota import config as ota_config
-    from ttne.ota import state as ota_state
     from ttne.update.coordinator import UpdateCoordinator
 
     logger.info("Initializing persistent settings")
@@ -848,12 +847,14 @@ async def init_persistent_settings():
         ota_config.save_config({})
 
     try:
-        logger.info("Clearing OTA pending state after system boot")
-        ota_state.clear_pending_update()
-        UpdateCoordinator.clear_session()
-        _set_update_pending(False)
+        UpdateCoordinator.reconcile_stale_session()
+        session = UpdateCoordinator.load_session()
+        if session.get("phase") == "pending_confirm":
+            _set_update_pending(True)
+        else:
+            _set_update_pending(False)
     except Exception:
-        logger.exception("Failed to clear OTA boot state")
+        logger.exception("Failed to initialize update session state")
     
     if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
         _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
