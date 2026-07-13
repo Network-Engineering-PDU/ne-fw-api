@@ -38,6 +38,11 @@ async def put_interfaces(data: models.BaseNetworkConfig, response: Response):
         response.status_code = 400
         return
 
+    # Persist the UI-visible selection before returning. Applying nmcli is
+    # asynchronous because it can interrupt connectivity, but the screen may
+    # refresh immediately after this response and must not see stale DHCP state.
+    functions.save_network_ui_config(data)
+
     # Apply the network change asynchronously so the local display UI
     # is not blocked waiting for nmcli to finish reconfiguring the link.
     utils.schedule_in(0, functions.set_network_config(data))

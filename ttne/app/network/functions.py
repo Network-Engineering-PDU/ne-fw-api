@@ -119,6 +119,50 @@ async def get_network_config() -> models.MacNetworkConfig:
     logger.info(network_config)
     return network_config
 
+
+def save_network_ui_config(
+    config: models.BaseNetworkConfig,
+    eth_interface: str = None,
+    lan1_ip: str = None,
+    lan2_ip: str = None,
+    wifi_ip: str = None,
+):
+    if eth_interface is None:
+        eth_interface = (
+            config.eth_interface or
+            config.params.eth_interface or
+            ""
+        )
+
+    lan1_ip = (
+        lan1_ip or
+        getattr(config, 'lan1_ip', None) or
+        config.params.ip or
+        "192.168.1.100"
+    )
+    lan2_ip = (
+        lan2_ip or
+        getattr(config, 'lan2_ip', None) or
+        "192.168.1.101"
+    )
+    wifi_ip = wifi_ip or getattr(config, 'wifi_ip', None) or ""
+
+    _save_network_ui_config({
+        "type": config.type,
+        "dhcp": config.dhcp,
+        "nw_mode": getattr(config, 'nw_mode', -1),
+        "ip": config.params.ip or "",
+        "subnet_mask": config.params.subnet_mask or "",
+        "gateway_ip": config.params.gateway_ip or "",
+        "dns": config.params.dns or "",
+        "ssid": config.params.ssid or "",
+        "eth_interface": eth_interface,
+        "lan1_ip": lan1_ip,
+        "lan2_ip": lan2_ip,
+        "wifi_ip": wifi_ip,
+    })
+
+
 async def set_network_config(config: models.BaseNetworkConfig):
     logger.info("Setting network configuration...")
     nw_config = NetworkConfig()
@@ -138,20 +182,13 @@ async def set_network_config(config: models.BaseNetworkConfig):
     nw_config.lan2_ip = getattr(config, 'lan2_ip', None) or "192.168.1.101"
     nw_config.wifi_ip = getattr(config, 'wifi_ip', None) or ""
 
-    _save_network_ui_config({
-        "type": config.type,
-        "dhcp": config.dhcp,
-        "nw_mode": nw_config.nw_mode,
-        "ip": config.params.ip or "",
-        "subnet_mask": config.params.subnet_mask or "",
-        "gateway_ip": config.params.gateway_ip or "",
-        "dns": config.params.dns or "",
-        "ssid": config.params.ssid or "",
-        "eth_interface": nw_config.eth_interface or "",
-        "lan1_ip": nw_config.lan1_ip,
-        "lan2_ip": nw_config.lan2_ip,
-        "wifi_ip": nw_config.wifi_ip,
-    })
+    save_network_ui_config(
+        config,
+        eth_interface=nw_config.eth_interface or "",
+        lan1_ip=nw_config.lan1_ip,
+        lan2_ip=nw_config.lan2_ip,
+        wifi_ip=nw_config.wifi_ip,
+    )
 
     if not config.dhcp:
         nw_config.ip = (
