@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 SERVICES_FILE = "/home/root/.ne/services"
 NETWORK_UI_CONFIG_FILE = "/home/root/.ne/network_ui_config.json"
+NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
 DEFAULT_LAN1_IP = "192.168.1.100"
 DEFAULT_LAN2_IP = "192.168.1.200"
 LEGACY_DEFAULT_LAN2_IP = "192.168.1.101"
@@ -68,6 +69,13 @@ def _normalize_lan2_ip(value):
 def _saved_int(data, key, default):
     try:
         return int(data.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(value, default):
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -176,66 +184,75 @@ def save_network_ui_config(
 
 async def set_network_config(config: models.BaseNetworkConfig):
     logger.info("Setting network configuration...")
-    nw_config = NetworkConfig()
-    nw_config.type = config.type
-    nw_config.nw_mode = getattr(config, 'nw_mode', -1)
-    nw_config.ssid = config.params.ssid or ""
-    nw_config.psk = config.params.password or ""
-    linked_ifaces = await nw_config._get_linked_eth_interfaces()
-    detected = await nw_config._get_active_eth_if()
-    requested_iface = getattr(config, 'eth_interface', None)
+    try:
+        with open(NETWORK_APPLY_LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
 
-    if nw_config.nw_mode in (NetworkConfig.NW_SINGLE_LAN, NetworkConfig.NW_LAN_WIFI):
-        if requested_iface in linked_ifaces:
+        nw_config = NetworkConfig()
+        nw_config.type = config.type
+        nw_config.nw_mode = _to_int(getattr(config, 'nw_mode', -1), -1)
+        nw_config.ssid = config.params.ssid or ""
+        nw_config.psk = config.params.password or ""
+        linked_ifaces = await nw_config._get_linked_eth_interfaces()
+        detected = await nw_config._get_active_eth_if()
+        requested_iface = getattr(config, 'eth_interface', None)
+
+        if nw_config.nw_mode in (NetworkConfig.NW_SINGLE_LAN, NetworkConfig.NW_LAN_WIFI):
+            if requested_iface in linked_ifaces:
+                nw_config.eth_interface = requested_iface
+            elif linked_ifaces:
+                nw_config.eth_interface = linked_ifaces[0]
+            else:
+                nw_config.eth_interface = detected or requested_iface or ""
+        elif requested_iface:
             nw_config.eth_interface = requested_iface
-        elif linked_ifaces:
-            nw_config.eth_interface = linked_ifaces[0]
         else:
-            nw_config.eth_interface = detected or requested_iface or ""
-    elif requested_iface:
-        nw_config.eth_interface = requested_iface
-    else:
-        nw_config.eth_interface = detected or "eth1"
+            nw_config.eth_interface = detected or "eth1"
 
-    nw_config.lan1_ip = getattr(config, 'lan1_ip', None) or config.params.ip or DEFAULT_LAN1_IP
-    nw_config.lan2_ip = _normalize_lan2_ip(
-        getattr(config, 'lan2_ip', None) or DEFAULT_LAN2_IP
-    )
-    nw_config.wifi_ip = getattr(config, 'wifi_ip', None) or ""
+        nw_config.lan1_ip = getattr(config, 'lan1_ip', None) or config.params.ip or DEFAULT_LAN1_IP
+        nw_config.lan2_ip = _normalize_lan2_ip(
+            getattr(config, 'lan2_ip', None) or DEFAULT_LAN2_IP
+        )
+        nw_config.wifi_ip = getattr(config, 'wifi_ip', None) or ""
 
-    save_network_ui_config(
-        config,
-        eth_interface=nw_config.eth_interface or "",
-        lan1_ip=nw_config.lan1_ip,
-        lan2_ip=nw_config.lan2_ip,
-        wifi_ip=nw_config.wifi_ip,
-    )
+        save_network_ui_config(
+            config,
+            eth_interface=nw_config.eth_interface or "",
+            lan1_ip=nw_config.lan1_ip,
+            lan2_ip=nw_config.lan2_ip,
+            wifi_ip=nw_config.wifi_ip,
+        )
 
-    if not config.dhcp:
-        nw_config.ip = (
-            nw_config.lan1_ip
-            if nw_config.nw_mode == NetworkConfig.NW_DUAL_LAN
-            else config.params.ip
-        ) or nw_config.ip
-        nw_config.mask = config.params.subnet_mask or nw_config.mask
-        nw_config.gateway = config.params.gateway_ip or ""
-        dnss = (config.params.dns or "").split(',')
-        if len(dnss) > 0:
-            nw_config.dns1 = dnss[0]
-        if len(dnss) > 1:
-            nw_config.dns2 = dnss[1]
+        if not config.dhcp:
+            nw_config.ip = (
+                nw_config.lan1_ip
+                if nw_config.nw_mode == NetworkConfig.NW_DUAL_LAN
+                else config.params.ip
+            ) or nw_config.ip
+            nw_config.mask = config.params.subnet_mask or nw_config.mask
+            nw_config.gateway = config.params.gateway_ip or ""
+            dnss = (config.params.dns or "").split(',')
+            if len(dnss) > 0:
+                nw_config.dns1 = dnss[0]
+            if len(dnss) > 1:
+                nw_config.dns2 = dnss[1]
 
-    logger.info(nw_config.type)
-    logger.info(nw_config.ssid)
-    logger.info(nw_config.psk)
-    logger.info(nw_config.ip)
-    logger.info(nw_config.mask)
-    logger.info(nw_config.gateway)
-    logger.info(nw_config.dns1)
-    logger.info(nw_config.dns2)
-    logger.info(f"Using ethernet interface: {nw_config.eth_interface}")
+        logger.info(nw_config.type)
+        logger.info(nw_config.ssid)
+        logger.info(nw_config.psk)
+        logger.info(nw_config.ip)
+        logger.info(nw_config.mask)
+        logger.info(nw_config.gateway)
+        logger.info(nw_config.dns1)
+        logger.info(nw_config.dns2)
+        logger.info(f"Using ethernet interface: {nw_config.eth_interface}")
 
-    await nw_config.save()
+        await nw_config.save()
+    finally:
+        try:
+            os.remove(NETWORK_APPLY_LOCK_FILE)
+        except FileNotFoundError:
+            pass
 
 async def reset_network_config():
     logger.info("Resetting network configuration...")

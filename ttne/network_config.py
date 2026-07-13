@@ -1,11 +1,13 @@
 import logging
 import ipaddress
+import os
 
 from ttne import utils
 from ttne.network_type import NetworkType
 
 
 logger = logging.getLogger(__name__)
+NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
 
 
 class NetworkConfig():
@@ -178,6 +180,10 @@ class NetworkConfig():
         await utils.shell("nmcli con reload")
 
     async def repair_ethernet_activation(self):
+        if os.path.exists(NETWORK_APPLY_LOCK_FILE):
+            logger.info("Network apply in progress; skipping ethernet repair")
+            return
+
         if await self._is_dual_lan_configured():
             linked_ifaces = await self._get_linked_eth_interfaces()
             if self.LAN1_IFACE in linked_ifaces:
@@ -434,9 +440,14 @@ class NetworkConfig():
                 )
 
     async def save(self):
-        if self.nw_mode == self.NW_LAN_WIFI:
+        try:
+            nw_mode = int(self.nw_mode)
+        except (TypeError, ValueError):
+            nw_mode = self.nw_mode
+
+        if nw_mode == self.NW_LAN_WIFI:
             await self.set_lan_wifi()
-        elif self.is_ethernet() and self.nw_mode == self.NW_DUAL_LAN:
+        elif self.is_ethernet() and nw_mode == self.NW_DUAL_LAN:
             await self.set_dual_lan()
         elif self.is_ethernet():
             await self.set_ethernet()
