@@ -145,11 +145,26 @@ class NetworkConfig():
     async def _get_active_eth_if(self):
         for iface in NetworkType.get_available_eth_interfaces():
             retval, output = await utils.shell(
-                f"nmcli -t -f GENERAL.STATE d show {iface}"
+                f"nmcli -g GENERAL.STATE d show {iface}"
             )
-            if retval == 0 and "connected" in output:
+            state = output.strip().split(None, 1)[0] if output else ""
+            if retval == 0 and state == "100":
                 return iface
         return None
+
+    async def _get_active_connections(self):
+        retval, output = await utils.shell(
+            "nmcli -t -f NAME,DEVICE connection show --active"
+        )
+        if retval != 0 or output is None:
+            return {}
+
+        active_connections = {}
+        for line in output.splitlines():
+            name, separator, iface = line.rpartition(":")
+            if separator and name and iface:
+                active_connections[name] = iface
+        return active_connections
 
     async def _get_linked_eth_interfaces(self):
         linked_ifaces = []
@@ -186,19 +201,20 @@ class NetworkConfig():
 
         if await self._is_dual_lan_configured():
             linked_ifaces = await self._get_linked_eth_interfaces()
-            if self.LAN1_IFACE in linked_ifaces:
-                await utils.shell(
-                    f"nmcli -w 10 con up '{self.LAN1_CONN}' ifname '{self.LAN1_IFACE}' || true"
-                )
-            else:
-                await utils.shell(f"nmcli con down '{self.LAN1_CONN}' || true")
-
-            if self.LAN2_IFACE in linked_ifaces:
-                await utils.shell(
-                    f"nmcli -w 10 con up '{self.LAN2_CONN}' ifname '{self.LAN2_IFACE}' || true"
-                )
-            else:
-                await utils.shell(f"nmcli con down '{self.LAN2_CONN}' || true")
+            active_connections = await self._get_active_connections()
+            for iface, connection in (
+                (self.LAN1_IFACE, self.LAN1_CONN),
+                (self.LAN2_IFACE, self.LAN2_CONN),
+            ):
+                active_iface = active_connections.get(connection)
+                if iface in linked_ifaces:
+                    if active_iface == iface:
+                        continue
+                    await utils.shell(
+                        f"nmcli -w 10 con up '{connection}' ifname '{iface}' || true"
+                    )
+                elif active_iface is not None:
+                    await utils.shell(f"nmcli con down '{connection}' || true")
             return
 
         retval, _ = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
