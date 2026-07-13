@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Response
 
 from ttne import utils
+from ttne.network_config import NetworkConfig
 from . import models, functions
 
 
@@ -35,6 +36,15 @@ async def put_interfaces(data: models.BaseNetworkConfig, response: Response):
         return
 
     if data.type is None:
+        response.status_code = 400
+        return
+
+    if (
+        data.nw_mode == NetworkConfig.NW_DUAL_LAN
+        and data.lan1_ip
+        and data.lan2_ip
+        and data.lan1_ip == data.lan2_ip
+    ):
         response.status_code = 400
         return
 

@@ -49,7 +49,7 @@ class NetworkConfig():
         self.eth_interface = None   # Preferred ethernet port; profile remains usable on either port.
         self.nw_mode = self.NW_SINGLE_LAN
         self.lan1_ip = "192.168.1.100"
-        self.lan2_ip = "192.168.1.101"
+        self.lan2_ip = "192.168.1.200"
         self.wifi_ip = ""
 
     def is_static(self):
@@ -182,14 +182,14 @@ class NetworkConfig():
             linked_ifaces = await self._get_linked_eth_interfaces()
             if self.LAN1_IFACE in linked_ifaces:
                 await utils.shell(
-                    f"nmcli con up '{self.LAN1_CONN}' ifname '{self.LAN1_IFACE}' || true"
+                    f"nmcli -w 10 con up '{self.LAN1_CONN}' ifname '{self.LAN1_IFACE}' || true"
                 )
             else:
                 await utils.shell(f"nmcli con down '{self.LAN1_CONN}' || true")
 
             if self.LAN2_IFACE in linked_ifaces:
                 await utils.shell(
-                    f"nmcli con up '{self.LAN2_CONN}' ifname '{self.LAN2_IFACE}' || true"
+                    f"nmcli -w 10 con up '{self.LAN2_CONN}' ifname '{self.LAN2_IFACE}' || true"
                 )
             else:
                 await utils.shell(f"nmcli con down '{self.LAN2_CONN}' || true")
@@ -222,7 +222,7 @@ class NetworkConfig():
         )
         await utils.shell(f"nmcli con down {self.ETH_CONN} || true")
         await utils.shell(
-            f"nmcli con up {self.ETH_CONN} ifname '{target_iface}' || nmcli con up {self.ETH_CONN} || true"
+            f"nmcli -w 10 con up {self.ETH_CONN} ifname '{target_iface}' || nmcli -w 10 con up {self.ETH_CONN} || true"
         )
 
     async def _add_ethernet_connection(self):
@@ -240,11 +240,16 @@ class NetworkConfig():
             )
 
     async def _activate_ethernet_connection(self):
-        activation_ifname = self.eth_interface if self.eth_interface else ""
+        linked_ifaces = await self._get_linked_eth_interfaces()
+        activation_ifname = ""
+        if self.eth_interface in linked_ifaces:
+            activation_ifname = self.eth_interface
+        elif linked_ifaces:
+            activation_ifname = linked_ifaces[0]
         if activation_ifname:
-            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} ifname '{activation_ifname}' || nmcli con up {self.ETH_CONN} || true")
+            retval, output = await utils.shell(f"nmcli -w 10 con up {self.ETH_CONN} ifname '{activation_ifname}' || nmcli -w 10 con up {self.ETH_CONN} || true")
         else:
-            retval, output = await utils.shell(f"nmcli con up {self.ETH_CONN} || true")
+            retval, output = await utils.shell(f"nmcli -w 10 con up {self.ETH_CONN} || true")
 
     async def _add_wifi_connection(self, route_metric=None, force_dhcp=False):
         if self.ssid is None or self.ssid == "":
@@ -273,7 +278,7 @@ class NetworkConfig():
     async def _activate_wifi_connection(self):
         if self.ssid is None or self.ssid == "":
             return
-        retval, output = await utils.shell(f"nmcli con up {self.WIFI_CONN} || true")
+        retval, output = await utils.shell(f"nmcli -w 10 con up {self.WIFI_CONN} || true")
 
     async def get_current_ip(self):
         if await self._is_dual_lan_configured():
@@ -395,7 +400,7 @@ class NetworkConfig():
         if self.is_static():
             mask = self.mask or "255.255.255.0"
             lan1_ip = self.lan1_ip or "192.168.1.100"
-            lan2_ip = self.lan2_ip or "192.168.1.101"
+            lan2_ip = self.lan2_ip or "192.168.1.200"
             lan1_iface = ipaddress.IPv4Interface(f"{lan1_ip}/{mask}")
             lan2_iface = ipaddress.IPv4Interface(f"{lan2_ip}/{mask}")
             dns_value = self.dns1
@@ -425,7 +430,7 @@ class NetworkConfig():
         ):
             if iface in linked_ifaces:
                 await utils.shell(
-                    f"nmcli con up '{conn}' ifname '{iface}' || true"
+                    f"nmcli -w 10 con up '{conn}' ifname '{iface}' || true"
                 )
 
     async def save(self):

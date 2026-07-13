@@ -71,7 +71,8 @@ async def read_file(file_path: str) -> str:
                 return f.read()
         except (FileNotFoundError, OSError):
             return ""
-    return await asyncio.to_thread(_read_file, file_path)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _read_file, file_path)
 
 
 async def write_file(file_path: str, data: str):
@@ -82,14 +83,21 @@ async def write_file(file_path: str, data: str):
                 f.write(data)
         except OSError:
             pass
-    await asyncio.to_thread(_write_file, file_path, data)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _write_file, file_path, data)
 
 async def shell(cmd):
     process = await asyncio.create_subprocess_shell(cmd,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT)
-    stdout, _ = await process.communicate()
+    timeout = 20 if cmd.lstrip().startswith("nmcli") else None
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout)
+    except asyncio.TimeoutError:
+        process.kill()
+        stdout, _ = await process.communicate()
+        return 124, stdout.decode() + "\nCommand timed out"
     retval = await process.wait()
     output = stdout.decode()
     return retval, output

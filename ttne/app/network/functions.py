@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 SERVICES_FILE = "/home/root/.ne/services"
 NETWORK_UI_CONFIG_FILE = "/home/root/.ne/network_ui_config.json"
+DEFAULT_LAN1_IP = "192.168.1.100"
+DEFAULT_LAN2_IP = "192.168.1.200"
+LEGACY_DEFAULT_LAN2_IP = "192.168.1.101"
 
 
 def _load_network_ui_config():
@@ -56,6 +59,12 @@ def _coalesce(*values):
     return ""
 
 
+def _normalize_lan2_ip(value):
+    if value == LEGACY_DEFAULT_LAN2_IP:
+        return DEFAULT_LAN2_IP
+    return value
+
+
 def _saved_int(data, key, default):
     try:
         return int(data.get(key, default))
@@ -88,8 +97,10 @@ async def get_network_config() -> models.MacNetworkConfig:
     nw_config.eth_interface = eth_iface  # Store the detected interface
 
     nw_mode = _saved_int(ui_config, "nw_mode", nw_config.nw_mode)
-    lan1_ip = _coalesce(ui_config.get("lan1_ip"), nw_config.lan1_ip, "192.168.1.100")
-    lan2_ip = _coalesce(ui_config.get("lan2_ip"), nw_config.lan2_ip, "192.168.1.101")
+    lan1_ip = _coalesce(ui_config.get("lan1_ip"), nw_config.lan1_ip, DEFAULT_LAN1_IP)
+    lan2_ip = _normalize_lan2_ip(
+        _coalesce(ui_config.get("lan2_ip"), nw_config.lan2_ip, DEFAULT_LAN2_IP)
+    )
     wifi_ip = _coalesce(ui_config.get("wifi_ip"), nw_config.wifi_ip)
 
     config_params = models.NetworkConfigParams(
@@ -138,12 +149,12 @@ def save_network_ui_config(
         lan1_ip or
         getattr(config, 'lan1_ip', None) or
         config.params.ip or
-        "192.168.1.100"
+        DEFAULT_LAN1_IP
     )
     lan2_ip = (
         lan2_ip or
         getattr(config, 'lan2_ip', None) or
-        "192.168.1.101"
+        DEFAULT_LAN2_IP
     )
     wifi_ip = wifi_ip or getattr(config, 'wifi_ip', None) or ""
 
@@ -170,16 +181,26 @@ async def set_network_config(config: models.BaseNetworkConfig):
     nw_config.nw_mode = getattr(config, 'nw_mode', -1)
     nw_config.ssid = config.params.ssid or ""
     nw_config.psk = config.params.password or ""
-    # Determine which ethernet interface to use. If the API explicitly provides
-    # an `eth_interface` use that, otherwise try to auto-detect the active one.
-    if getattr(config, 'eth_interface', None):
-        nw_config.eth_interface = config.eth_interface
+    linked_ifaces = await nw_config._get_linked_eth_interfaces()
+    detected = await nw_config._get_active_eth_if()
+    requested_iface = getattr(config, 'eth_interface', None)
+
+    if nw_config.nw_mode in (NetworkConfig.NW_SINGLE_LAN, NetworkConfig.NW_LAN_WIFI):
+        if requested_iface in linked_ifaces:
+            nw_config.eth_interface = requested_iface
+        elif linked_ifaces:
+            nw_config.eth_interface = linked_ifaces[0]
+        else:
+            nw_config.eth_interface = detected or requested_iface or ""
+    elif requested_iface:
+        nw_config.eth_interface = requested_iface
     else:
-        detected = await nw_config._get_active_eth_if()
         nw_config.eth_interface = detected or "eth1"
 
-    nw_config.lan1_ip = getattr(config, 'lan1_ip', None) or config.params.ip or "192.168.1.100"
-    nw_config.lan2_ip = getattr(config, 'lan2_ip', None) or "192.168.1.101"
+    nw_config.lan1_ip = getattr(config, 'lan1_ip', None) or config.params.ip or DEFAULT_LAN1_IP
+    nw_config.lan2_ip = _normalize_lan2_ip(
+        getattr(config, 'lan2_ip', None) or DEFAULT_LAN2_IP
+    )
     nw_config.wifi_ip = getattr(config, 'wifi_ip', None) or ""
 
     save_network_ui_config(
