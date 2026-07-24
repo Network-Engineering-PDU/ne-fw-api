@@ -1,6 +1,7 @@
 import logging
 import ipaddress
 import os
+import json
 
 from ttne import utils
 from ttne.network_type import NetworkType
@@ -8,6 +9,7 @@ from ttne.network_type import NetworkType
 
 logger = logging.getLogger(__name__)
 NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
+NETWORK_UI_CONFIG_FILE = "/home/root/.ne/network_ui_config.json"
 
 
 class NetworkConfig():
@@ -18,6 +20,10 @@ class NetworkConfig():
     LAN2_CONN = "ble-eth-lan2-conn"
     LAN1_IFACE = "eth1"
     LAN2_IFACE = "eth0"
+    LAN1_ROUTE_TABLE = 101
+    LAN2_ROUTE_TABLE = 102
+    LAN1_RULE_PRIORITY = 1001
+    LAN2_RULE_PRIORITY = 1002
     NW_SINGLE_LAN = 0
     NW_WIFI_ONLY = 1
     NW_DUAL_LAN = 2
@@ -37,6 +43,7 @@ class NetworkConfig():
         self.lan1_ip = None
         self.lan2_ip = None
         self.wifi_ip = None
+        self._dual_lan_policy_initialized = False
         self.reset()
     
     def reset(self):
@@ -112,11 +119,49 @@ class NetworkConfig():
         retval, _ = await utils.shell(f"nmcli -t con show '{name}'")
         return retval == 0
 
-    async def _is_dual_lan_configured(self):
-        return (
-            await self._connection_exists(self.LAN1_CONN) or
-            await self._connection_exists(self.LAN2_CONN)
+    async def _get_connection_ipv4_method(self, name):
+        retval, output = await utils.exec_command(
+            "nmcli", "-g", "ipv4.method", "connection", "show", name
         )
+        if retval != 0:
+            return None
+        return output.strip()
+
+    async def _get_dual_lan_profile_state(self):
+        return (
+            await self._connection_exists(self.LAN1_CONN),
+            await self._connection_exists(self.LAN2_CONN),
+        )
+
+    async def _is_dual_lan_configured(self):
+        profile_state = await self._get_dual_lan_profile_state()
+        if any(profile_state) and not all(profile_state):
+            logger.warning(
+                "Incomplete dual-LAN configuration detected: LAN1=%s LAN2=%s",
+                profile_state[0],
+                profile_state[1],
+            )
+            await self._restore_missing_dual_lan_profiles(profile_state)
+            profile_state = await self._get_dual_lan_profile_state()
+        # Keep treating a partial setup as dual-LAN so a failed restoration
+        # cannot fall through and replace it with the single-LAN profile.
+        return any(profile_state)
+
+    def _load_saved_network_config(self):
+        try:
+            with open(NETWORK_UI_CONFIG_FILE, "r") as config_file:
+                data = json.load(config_file)
+                return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _get_saved_network_mode(self, saved_config=None):
+        if saved_config is None:
+            saved_config = self._load_saved_network_config()
+        try:
+            return int(saved_config.get("nw_mode"))
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     async def _disable_auto_wired_connections(self):
         retval, output = await utils.shell("nmcli -t -f NAME,TYPE con show")
@@ -174,6 +219,224 @@ class NetworkConfig():
                 linked_ifaces.append(iface)
         return linked_ifaces
 
+    async def _set_dual_lan_arp_settings(self, enabled):
+        arp_ignore = 1 if enabled else 0
+        arp_announce = 2 if enabled else 0
+        success = True
+        for iface in (self.LAN1_IFACE, self.LAN2_IFACE):
+            retval, _ = await utils.exec_command(
+                "sysctl", "-q", "-w",
+                f"net.ipv4.conf.{iface}.arp_ignore={arp_ignore}",
+            )
+            success = success and retval == 0
+            retval, _ = await utils.exec_command(
+                "sysctl", "-q", "-w",
+                f"net.ipv4.conf.{iface}.arp_announce={arp_announce}",
+            )
+            success = success and retval == 0
+        return success
+
+    async def _clear_dual_lan_policy_routing(self):
+        retval, rules = await utils.exec_command("ip", "-4", "rule", "show")
+        owned_priorities = {
+            str(self.LAN1_RULE_PRIORITY),
+            str(self.LAN2_RULE_PRIORITY),
+        }
+        rule_priorities = {
+            line.split(":", 1)[0].strip()
+            for line in rules.splitlines()
+            if ":" in line
+        } if retval == 0 else set()
+        if owned_priorities.isdisjoint(rule_priorities):
+            self._dual_lan_policy_initialized = False
+            return
+
+        await self._remove_dual_lan_policy_routing()
+
+    async def _remove_dual_lan_policy_routing(self):
+        for table, priority in (
+            (self.LAN1_ROUTE_TABLE, self.LAN1_RULE_PRIORITY),
+            (self.LAN2_ROUTE_TABLE, self.LAN2_RULE_PRIORITY),
+        ):
+            await utils.exec_command(
+                "ip", "-4", "rule", "del", "priority", str(priority)
+            )
+            await utils.exec_command(
+                "ip", "-4", "route", "flush", "table", str(table)
+            )
+        await self._set_dual_lan_arp_settings(False)
+        self._dual_lan_policy_initialized = False
+
+    async def _apply_dual_lan_policy_routing(self, active_connections):
+        """Keep replies on the LAN interface that owns their source address.
+
+        Linux otherwise chooses only the lowest-metric route when both LAN
+        interfaces use the same subnet. That sends LAN2 replies through LAN1
+        and also causes ARP replies for one interface to leak onto the other.
+        """
+        success = await self._set_dual_lan_arp_settings(True)
+
+        for iface, connection, table, priority in (
+            (
+                self.LAN1_IFACE,
+                self.LAN1_CONN,
+                self.LAN1_ROUTE_TABLE,
+                self.LAN1_RULE_PRIORITY,
+            ),
+            (
+                self.LAN2_IFACE,
+                self.LAN2_CONN,
+                self.LAN2_ROUTE_TABLE,
+                self.LAN2_RULE_PRIORITY,
+            ),
+        ):
+            await utils.exec_command(
+                "ip", "-4", "rule", "del", "priority", str(priority)
+            )
+            await utils.exec_command(
+                "ip", "-4", "route", "flush", "table", str(table)
+            )
+
+            if active_connections.get(connection) != iface:
+                continue
+
+            ip, mask, _ = await self._read_ip_from_if(iface)
+            if ip is None or mask is None:
+                logger.warning(
+                    "Can not configure source routing for %s: no IPv4 address",
+                    iface,
+                )
+                success = False
+                continue
+
+            network = ipaddress.IPv4Network(f"{ip}/{mask}", strict=False)
+            retval, output = await utils.exec_command(
+                "ip", "-4", "route", "add", "table", str(table),
+                str(network), "dev", iface, "src", ip,
+            )
+            if retval != 0:
+                logger.warning(
+                    "Can not configure route table %s for %s: %s",
+                    table,
+                    iface,
+                    output.strip(),
+                )
+                success = False
+
+            retval, output = await utils.exec_command(
+                "ip", "-4", "rule", "add", "priority", str(priority),
+                "from", f"{ip}/32", "table", str(table),
+            )
+            if retval != 0:
+                logger.warning(
+                    "Can not configure routing rule for %s: %s",
+                    iface,
+                    output.strip(),
+                )
+                success = False
+
+        if not success:
+            await self._remove_dual_lan_policy_routing()
+            return False
+
+        self._dual_lan_policy_initialized = success
+        return success
+
+    async def _dual_lan_policy_is_current(self, active_connections):
+        retval, rules = await utils.exec_command("ip", "-4", "rule", "show")
+        if retval != 0:
+            return False
+
+        for iface, connection, table, priority in (
+            (
+                self.LAN1_IFACE,
+                self.LAN1_CONN,
+                self.LAN1_ROUTE_TABLE,
+                self.LAN1_RULE_PRIORITY,
+            ),
+            (
+                self.LAN2_IFACE,
+                self.LAN2_CONN,
+                self.LAN2_ROUTE_TABLE,
+                self.LAN2_RULE_PRIORITY,
+            ),
+        ):
+            if active_connections.get(connection) != iface:
+                if any(
+                    line.split(":", 1)[0].strip() == str(priority)
+                    for line in rules.splitlines()
+                    if ":" in line
+                ):
+                    return False
+                continue
+
+            ip, mask, _ = await self._read_ip_from_if(iface)
+            if ip is None or mask is None:
+                return False
+            expected_rule_tokens = {
+                str(priority),
+                "from",
+                ip,
+                "lookup",
+                str(table),
+            }
+            if not any(
+                expected_rule_tokens.issubset(
+                    set(line.replace(":", " ").split())
+                )
+                for line in rules.splitlines()
+            ):
+                return False
+
+            network = ipaddress.IPv4Network(f"{ip}/{mask}", strict=False)
+            retval, routes = await utils.exec_command(
+                "ip", "-4", "route", "show", "table", str(table)
+            )
+            if retval != 0:
+                return False
+            route_tokens = {
+                str(network),
+                "dev",
+                iface,
+                "src",
+                ip,
+            }
+            if not route_tokens.issubset(set(routes.split())):
+                return False
+
+        return True
+
+    async def _restore_missing_single_ethernet_profile(self, saved_config):
+        dhcp = saved_config.get("dhcp")
+        if dhcp is None:
+            dhcp = saved_config.get("type") == NetworkType.ETH_DHCP
+        dhcp = bool(dhcp)
+        self.type = NetworkType.ETH_DHCP if dhcp else NetworkType.ETH_STATIC
+        self.eth_interface = saved_config.get("eth_interface") or ""
+
+        if not dhcp:
+            self.ip = saved_config.get("ip") or self.ip
+            self.mask = saved_config.get("subnet_mask") or self.mask
+            self.gateway = saved_config.get("gateway_ip") or ""
+            dns = (saved_config.get("dns") or "").split(",")
+            self.dns1 = dns[0].strip() if dns else ""
+            self.dns2 = dns[1].strip() if len(dns) > 1 else ""
+            try:
+                ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
+            except (
+                ipaddress.AddressValueError,
+                ipaddress.NetmaskValueError,
+            ) as exc:
+                logger.error(
+                    "Can not restore missing Single-LAN profile: %s",
+                    exc,
+                )
+                return False
+
+        await self._add_ethernet_connection()
+        await self._activate_ethernet_connection()
+        return True
+
     async def _ensure_eth_profile_portable(self):
         retval, output = await utils.shell(
             f"nmcli -g connection.interface-name con show {self.ETH_CONN}"
@@ -182,13 +445,14 @@ class NetworkConfig():
             return
 
         pinned_iface = output.strip()
-        if pinned_iface in NetworkType.get_available_eth_interfaces():
-            logger.info(
-                "Clearing pinned ethernet interface %s from %s",
-                pinned_iface,
-                self.ETH_CONN,
-            )
+        if pinned_iface not in NetworkType.get_available_eth_interfaces():
+            return
 
+        logger.info(
+            "Clearing pinned ethernet interface %s from %s",
+            pinned_iface,
+            self.ETH_CONN,
+        )
         await utils.shell(
             f"nmcli con modify {self.ETH_CONN} connection.interface-name '' connection.autoconnect yes connection.autoconnect-retries 0"
         )
@@ -199,9 +463,30 @@ class NetworkConfig():
             logger.info("Network apply in progress; skipping ethernet repair")
             return
 
-        if await self._is_dual_lan_configured():
+        saved_config = self._load_saved_network_config()
+        saved_mode = self._get_saved_network_mode(saved_config)
+        if saved_mode == self.NW_WIFI_ONLY:
+            self._dual_lan_policy_initialized = False
+            logger.info(
+                "WiFi-only configuration detected; skipping Ethernet repair"
+            )
+            return
+
+        if saved_mode in (self.NW_SINGLE_LAN, self.NW_LAN_WIFI):
+            # The persisted mode is authoritative after a mode transition.
+            # Ignore any stale dual-LAN profile that NetworkManager failed to
+            # delete so it cannot reactivate policy routing in a non-dual mode.
+            dual_lan_configured = False
+        else:
+            dual_lan_configured = await self._is_dual_lan_configured()
+        if not dual_lan_configured and saved_mode == self.NW_DUAL_LAN:
+            await self._restore_missing_dual_lan_profiles((False, False))
+            dual_lan_configured = await self._is_dual_lan_configured()
+
+        if dual_lan_configured:
             linked_ifaces = await self._get_linked_eth_interfaces()
             active_connections = await self._get_active_connections()
+            activation_changed = False
             for iface, connection in (
                 (self.LAN1_IFACE, self.LAN1_CONN),
                 (self.LAN2_IFACE, self.LAN2_CONN),
@@ -213,19 +498,45 @@ class NetworkConfig():
                     await utils.shell(
                         f"nmcli -w 10 con up '{connection}' ifname '{iface}' || true"
                     )
+                    activation_changed = True
                 elif active_iface is not None:
                     await utils.shell(f"nmcli con down '{connection}' || true")
+                    activation_changed = True
+            if activation_changed:
+                active_connections = await self._get_active_connections()
+            policy_is_current = (
+                self._dual_lan_policy_initialized
+                and await self._dual_lan_policy_is_current(active_connections)
+            )
+            if activation_changed or not policy_is_current:
+                await self._apply_dual_lan_policy_routing(active_connections)
             return
 
+        self._dual_lan_policy_initialized = False
         retval, _ = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
         if retval != 0:
+            wifi_exists = await self._connection_exists(self.WIFI_CONN)
+            if saved_mode == self.NW_WIFI_ONLY or (
+                saved_mode is None and wifi_exists
+            ):
+                logger.info(
+                    "WiFi-only configuration detected; skipping Ethernet repair"
+                )
+                return
+            if saved_mode in (self.NW_SINGLE_LAN, self.NW_LAN_WIFI):
+                logger.warning(
+                    "Single-LAN profile missing; restoring saved configuration"
+                )
+                await self._restore_missing_single_ethernet_profile(saved_config)
+                return
             logger.info("Ethernet profile missing; recreating default profile")
             await self.save()
             return
 
         await self._ensure_eth_profile_portable()
         linked_ifaces = await self._get_linked_eth_interfaces()
-        active_iface = await self._get_active_eth_if()
+        active_connections = await self._get_active_connections()
+        active_iface = active_connections.get(self.ETH_CONN)
 
         if active_iface in linked_ifaces:
             return
@@ -253,12 +564,27 @@ class NetworkConfig():
             dns_value = self.dns1
             if self.dns2:
                 dns_value = f"{self.dns1},{self.dns2}"
-            retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ip4 {str(iface_ip)} gw4 {self.gateway} ipv4.dns '{dns_value}' connection.autoconnect yes connection.autoconnect-retries 0"
-            )
+            args = [
+                "nmcli", "connection", "add", "type", "ethernet",
+                "con-name", self.ETH_CONN, "ifname", "*",
+                "ip4", str(iface_ip),
+            ]
+            if self.gateway:
+                args.extend(["gw4", self.gateway])
+            if dns_value:
+                args.extend(["ipv4.dns", dns_value])
+            args.extend([
+                "connection.autoconnect", "yes",
+                "connection.autoconnect-retries", "0",
+            ])
+            retval, output = await utils.exec_command(*args)
         else:
-            retval, output = await utils.shell(
-                f"nmcli connection add type ethernet con-name {self.ETH_CONN} ifname '*' ipv4.method auto connection.autoconnect yes connection.autoconnect-retries 0"
+            retval, output = await utils.exec_command(
+                "nmcli", "connection", "add", "type", "ethernet",
+                "con-name", self.ETH_CONN, "ifname", "*",
+                "ipv4.method", "auto",
+                "connection.autoconnect", "yes",
+                "connection.autoconnect-retries", "0",
             )
 
     async def _activate_ethernet_connection(self):
@@ -269,42 +595,78 @@ class NetworkConfig():
         elif linked_ifaces:
             activation_ifname = linked_ifaces[0]
         if activation_ifname:
-            retval, output = await utils.shell(f"nmcli -w 10 con up {self.ETH_CONN} ifname '{activation_ifname}' || nmcli -w 10 con up {self.ETH_CONN} || true")
+            retval, output = await utils.exec_command(
+                "nmcli", "-w", "10", "con", "up", self.ETH_CONN,
+                "ifname", activation_ifname,
+            )
+            if retval != 0:
+                retval, output = await utils.exec_command(
+                    "nmcli", "-w", "10", "con", "up", self.ETH_CONN
+                )
         else:
-            retval, output = await utils.shell(f"nmcli -w 10 con up {self.ETH_CONN} || true")
+            retval, output = await utils.exec_command(
+                "nmcli", "-w", "10", "con", "up", self.ETH_CONN
+            )
 
     async def _add_wifi_connection(self, route_metric=None, force_dhcp=False):
         if self.ssid is None or self.ssid == "":
             logger.warning("WiFi SSID is empty; skipping WiFi profile creation")
             return
 
-        route_metric_arg = ""
+        route_metric_args = []
         if route_metric is not None:
-            route_metric_arg = f" ipv4.route-metric {route_metric} ipv6.route-metric {route_metric}"
+            route_metric_args = [
+                "ipv4.route-metric", str(route_metric),
+                "ipv6.route-metric", str(route_metric),
+            ]
 
         if self.is_static() and not force_dhcp:
             iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
-            gateway_arg = f" gw4 {self.gateway}" if self.gateway else ""
             dns_value = self.dns1
             if self.dns2:
                 dns_value = f"{self.dns1},{self.dns2}"
-            dns_arg = f" ipv4.dns '{dns_value}'" if dns_value else ""
-            await utils.shell(
-                f"nmcli connection add type wifi ifname '*' con-name '{self.WIFI_CONN}' ssid '{self.ssid}' ip4 {str(iface_ip)}{gateway_arg}{dns_arg} 802-11-wireless-security.key-mgmt 'wpa-psk' 802-11-wireless-security.psk '{self.psk}' connection.autoconnect yes{route_metric_arg}"
-            )
+            args = [
+                "nmcli", "connection", "add", "type", "wifi",
+                "ifname", "*", "con-name", self.WIFI_CONN,
+                "ssid", self.ssid, "ip4", str(iface_ip),
+            ]
+            if self.gateway:
+                args.extend(["gw4", self.gateway])
+            if dns_value:
+                args.extend(["ipv4.dns", dns_value])
+            args.extend([
+                "802-11-wireless-security.key-mgmt", "wpa-psk",
+                "802-11-wireless-security.psk", self.psk,
+                "connection.autoconnect", "yes",
+            ])
+            args.extend(route_metric_args)
+            await utils.exec_command(*args)
         else:
-            await utils.shell(
-                f"nmcli connection add type wifi ifname '*' con-name '{self.WIFI_CONN}' ssid '{self.ssid}' 802-11-wireless-security.key-mgmt 'wpa-psk' 802-11-wireless-security.psk '{self.psk}' connection.autoconnect yes{route_metric_arg}"
+            await utils.exec_command(
+                "nmcli", "connection", "add", "type", "wifi",
+                "ifname", "*", "con-name", self.WIFI_CONN,
+                "ssid", self.ssid,
+                "802-11-wireless-security.key-mgmt", "wpa-psk",
+                "802-11-wireless-security.psk", self.psk,
+                "connection.autoconnect", "yes",
+                *route_metric_args,
             )
 
     async def _activate_wifi_connection(self):
         if self.ssid is None or self.ssid == "":
             return
-        retval, output = await utils.shell(f"nmcli -w 10 con up {self.WIFI_CONN} || true")
+        retval, output = await utils.exec_command(
+            "nmcli", "-w", "10", "con", "up", self.WIFI_CONN
+        )
 
     async def get_current_ip(self):
         if await self._is_dual_lan_configured():
-            self.type = NetworkType.ETH_STATIC
+            method = await self._get_connection_ipv4_method(self.LAN1_CONN)
+            self.type = (
+                NetworkType.ETH_DHCP
+                if method == "auto"
+                else NetworkType.ETH_STATIC
+            )
             self.nw_mode = self.NW_DUAL_LAN
             lan1_ip, lan1_mask, lan1_gateway = await self._read_ip_from_if(
                 self.LAN1_IFACE
@@ -330,7 +692,8 @@ class NetworkConfig():
             self.type = NetworkType.ETH_STATIC
             retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE con show {self.ETH_CONN}")
             if "activated" in output:
-                iface = await self._get_active_eth_if()
+                active_connections = await self._get_active_connections()
+                iface = active_connections.get(self.ETH_CONN)
                 if iface is not None and await self._get_ip_from_if(iface):
                     self.eth_interface = iface  # Store which interface is being used
                     return
@@ -361,7 +724,12 @@ class NetworkConfig():
     async def get_static(self):
         # Con only exist if is static
         if await self._is_dual_lan_configured():
-            self.type = NetworkType.ETH_STATIC
+            method = await self._get_connection_ipv4_method(self.LAN1_CONN)
+            self.type = (
+                NetworkType.ETH_DHCP
+                if method == "auto"
+                else NetworkType.ETH_STATIC
+            )
             return
         retval, output = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
         if retval == 0:
@@ -373,6 +741,7 @@ class NetworkConfig():
 
     async def set_wifi(self):
         logger.info("Set WiFi")
+        await self._clear_dual_lan_policy_routing()
         await self._delete_single_eth_connection()
         await self._delete_dual_lan_connections()
         await self._delete_wifi_connection()
@@ -381,6 +750,7 @@ class NetworkConfig():
 
     async def set_ethernet(self):
         logger.info(f"Set Ethernet on interface {self.eth_interface}")
+        await self._clear_dual_lan_policy_routing()
         await self._delete_single_eth_connection()
         await self._delete_dual_lan_connections()
         await self._delete_wifi_connection()
@@ -389,6 +759,7 @@ class NetworkConfig():
 
     async def set_lan_wifi(self):
         logger.info("Set LAN + WiFi on interface %s and SSID %s", self.eth_interface, self.ssid)
+        await self._clear_dual_lan_policy_routing()
         await self._delete_single_eth_connection()
         await self._delete_dual_lan_connections()
         await self._delete_wifi_connection()
@@ -406,6 +777,94 @@ class NetworkConfig():
 
         await self._activate_wifi_connection()
 
+    async def _add_dual_lan_connection(
+        self,
+        connection,
+        iface,
+        ip,
+        never_default=False,
+    ):
+        args = [
+            "nmcli", "connection", "add", "type", "ethernet",
+            "con-name", connection, "ifname", iface,
+        ]
+        if self.is_static():
+            iface_ip = ipaddress.IPv4Interface(f"{ip}/{self.mask}")
+            args.extend(["ip4", str(iface_ip)])
+            if not never_default and self.gateway:
+                args.extend(["gw4", self.gateway])
+            if not never_default:
+                dns_value = self.dns1
+                if self.dns2:
+                    dns_value = f"{self.dns1},{self.dns2}"
+                if dns_value:
+                    args.extend(["ipv4.dns", dns_value])
+        else:
+            args.extend(["ipv4.method", "auto"])
+
+        if never_default:
+            args.extend(["ipv4.never-default", "yes"])
+        args.extend([
+            "connection.autoconnect", "yes",
+            "connection.autoconnect-retries", "0",
+        ])
+        retval, output = await utils.exec_command(*args)
+        if retval != 0:
+            logger.warning(
+                "Can not create %s on %s: %s",
+                connection,
+                iface,
+                output.strip(),
+            )
+        return retval == 0
+
+    async def _restore_missing_dual_lan_profiles(self, profile_state):
+        saved = self._load_saved_network_config()
+        existing_connection = (
+            self.LAN1_CONN if profile_state[0] else self.LAN2_CONN
+        )
+        existing_method = await self._get_connection_ipv4_method(
+            existing_connection
+        )
+        dhcp = saved.get("dhcp")
+        if dhcp is None:
+            dhcp = existing_method == "auto"
+        self.type = (
+            NetworkType.ETH_DHCP
+            if dhcp
+            else NetworkType.ETH_STATIC
+        )
+        self.mask = saved.get("subnet_mask") or self.mask
+        self.gateway = saved.get("gateway_ip") or ""
+        dns = (saved.get("dns") or "").split(",")
+        self.dns1 = dns[0].strip() if dns else ""
+        self.dns2 = dns[1].strip() if len(dns) > 1 else ""
+        self.lan1_ip = saved.get("lan1_ip") or self.lan1_ip
+        self.lan2_ip = saved.get("lan2_ip") or self.lan2_ip
+
+        try:
+            ipaddress.IPv4Interface(f"{self.lan1_ip}/{self.mask}")
+            ipaddress.IPv4Interface(f"{self.lan2_ip}/{self.mask}")
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as exc:
+            logger.error("Can not restore incomplete dual-LAN profiles: %s", exc)
+            return False
+
+        restored = True
+        if not profile_state[0]:
+            restored = await self._add_dual_lan_connection(
+                self.LAN1_CONN,
+                self.LAN1_IFACE,
+                self.lan1_ip,
+            ) and restored
+        if not profile_state[1]:
+            restored = await self._add_dual_lan_connection(
+                self.LAN2_CONN,
+                self.LAN2_IFACE,
+                self.lan2_ip,
+                never_default=True,
+            ) and restored
+        return restored
+
     async def set_dual_lan(self):
         logger.info(
             "Set Dual LAN: LAN1(%s)=%s LAN2(%s)=%s",
@@ -418,32 +877,22 @@ class NetworkConfig():
         await utils.shell(f"nmcli con del '{self.ETH_CONN}' || true")
         await utils.shell(f"nmcli con del '{self.LAN1_CONN}' || true")
         await utils.shell(f"nmcli con del '{self.LAN2_CONN}' || true")
+        await self._delete_wifi_connection()
 
-        if self.is_static():
-            mask = self.mask or "255.255.255.0"
-            lan1_ip = self.lan1_ip or "192.168.1.100"
-            lan2_ip = self.lan2_ip or "192.168.1.200"
-            lan1_iface = ipaddress.IPv4Interface(f"{lan1_ip}/{mask}")
-            lan2_iface = ipaddress.IPv4Interface(f"{lan2_ip}/{mask}")
-            dns_value = self.dns1
-            if self.dns2:
-                dns_value = f"{self.dns1},{self.dns2}"
-            gateway_arg = f"gw4 {self.gateway}" if self.gateway else ""
-            dns_arg = f"ipv4.dns '{dns_value}'" if dns_value else ""
-
-            await utils.shell(
-                f"nmcli connection add type ethernet con-name '{self.LAN1_CONN}' ifname '{self.LAN1_IFACE}' ip4 {str(lan1_iface)} {gateway_arg} {dns_arg} connection.autoconnect yes connection.autoconnect-retries 0"
-            )
-            await utils.shell(
-                f"nmcli connection add type ethernet con-name '{self.LAN2_CONN}' ifname '{self.LAN2_IFACE}' ip4 {str(lan2_iface)} ipv4.never-default yes connection.autoconnect yes connection.autoconnect-retries 0"
-            )
-        else:
-            await utils.shell(
-                f"nmcli connection add type ethernet con-name '{self.LAN1_CONN}' ifname '{self.LAN1_IFACE}' ipv4.method auto connection.autoconnect yes connection.autoconnect-retries 0"
-            )
-            await utils.shell(
-                f"nmcli connection add type ethernet con-name '{self.LAN2_CONN}' ifname '{self.LAN2_IFACE}' ipv4.method auto ipv4.never-default yes connection.autoconnect yes connection.autoconnect-retries 0"
-            )
+        self.mask = self.mask or "255.255.255.0"
+        self.lan1_ip = self.lan1_ip or "192.168.1.100"
+        self.lan2_ip = self.lan2_ip or "192.168.1.200"
+        await self._add_dual_lan_connection(
+            self.LAN1_CONN,
+            self.LAN1_IFACE,
+            self.lan1_ip,
+        )
+        await self._add_dual_lan_connection(
+            self.LAN2_CONN,
+            self.LAN2_IFACE,
+            self.lan2_ip,
+            never_default=True,
+        )
 
         linked_ifaces = await self._get_linked_eth_interfaces()
         for iface, conn in (
@@ -454,6 +903,8 @@ class NetworkConfig():
                 await utils.shell(
                     f"nmcli -w 10 con up '{conn}' ifname '{iface}' || true"
                 )
+        active_connections = await self._get_active_connections()
+        await self._apply_dual_lan_policy_routing(active_connections)
 
     async def save(self):
         try:

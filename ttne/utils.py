@@ -21,9 +21,10 @@ def periodic_task(function, period, *args, **kwargs):
                     function(*args, **kwargs)
             except asyncio.CancelledError:
                 return
-            except:
+            except Exception:
                 logger.exception(f"Periodic task {function.__name__} ex")
-                raise
+                # A transient command or parsing failure must not permanently
+                # stop watchdog-style tasks such as Ethernet repair.
             await asyncio.sleep(max(0, next_time - time.time()))
     return asyncio.create_task(periodic_task_coro(function, period, *args,
         **kwargs))
@@ -101,3 +102,22 @@ async def shell(cmd):
     retval = await process.wait()
     output = stdout.decode()
     return retval, output
+
+
+async def exec_command(*args):
+    """Execute an argv command without involving a shell."""
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    timeout = 20 if args and args[0] == "nmcli" else None
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout)
+    except asyncio.TimeoutError:
+        process.kill()
+        stdout, _ = await process.communicate()
+        return 124, stdout.decode() + "\nCommand timed out"
+    retval = await process.wait()
+    return retval, stdout.decode()

@@ -39,6 +39,12 @@ async def put_interfaces(data: models.BaseNetworkConfig, response: Response):
         response.status_code = 400
         return
 
+    try:
+        functions.validate_network_config(data)
+    except ValueError:
+        response.status_code = 400
+        return
+
     if (
         data.nw_mode == NetworkConfig.NW_DUAL_LAN
         and data.lan1_ip

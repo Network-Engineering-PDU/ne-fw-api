@@ -3,6 +3,7 @@ import re
 import asyncio
 import logging
 import json
+import ipaddress
 
 from ttne import utils
 from ttne.network_config import NetworkConfig
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 SERVICES_FILE = "/home/root/.ne/services"
 NETWORK_UI_CONFIG_FILE = "/home/root/.ne/network_ui_config.json"
 NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
+NETWORK_APPLY_MUTEX = asyncio.Lock()
 DEFAULT_LAN1_IP = "192.168.1.100"
 DEFAULT_LAN2_IP = "192.168.1.200"
 LEGACY_DEFAULT_LAN2_IP = "192.168.1.101"
@@ -78,6 +80,79 @@ def _to_int(value, default):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _validate_ipv4(value, field, allow_empty=False):
+    if value is None or value == "":
+        if allow_empty:
+            return
+        raise ValueError(f"{field} is required")
+    try:
+        ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as exc:
+        raise ValueError(f"{field} is not a valid IPv4 address") from exc
+
+
+def validate_network_config(config: models.BaseNetworkConfig):
+    ethernet_types = {NetworkType.ETH_DHCP, NetworkType.ETH_STATIC}
+    wifi_types = {NetworkType.WIFI_DHCP, NetworkType.WIFI_STATIC}
+    if config.type not in ethernet_types | wifi_types:
+        raise ValueError("Invalid network type")
+
+    valid_modes = {
+        NetworkConfig.NW_SINGLE_LAN,
+        NetworkConfig.NW_WIFI_ONLY,
+        NetworkConfig.NW_DUAL_LAN,
+        NetworkConfig.NW_LAN_WIFI,
+        -1,
+    }
+    if config.nw_mode not in valid_modes:
+        raise ValueError("Invalid network mode")
+    if (
+        config.nw_mode in (
+            NetworkConfig.NW_SINGLE_LAN,
+            NetworkConfig.NW_DUAL_LAN,
+            NetworkConfig.NW_LAN_WIFI,
+        )
+        and config.type not in ethernet_types
+    ):
+        raise ValueError("Selected LAN mode requires an Ethernet network type")
+    if (
+        config.nw_mode == NetworkConfig.NW_WIFI_ONLY
+        and config.type not in wifi_types
+    ):
+        raise ValueError("WiFi-only mode requires a WiFi network type")
+
+    requested_iface = config.eth_interface or config.params.eth_interface
+    if requested_iface and requested_iface not in NetworkType.get_available_eth_interfaces():
+        raise ValueError("Invalid Ethernet interface")
+
+    for value, field in (
+        (config.params.ip, "IP address"),
+        (config.params.gateway_ip, "Gateway"),
+        (config.lan1_ip, "LAN1 IP address"),
+        (config.lan2_ip, "LAN2 IP address"),
+        (config.wifi_ip, "WiFi IP address"),
+    ):
+        _validate_ipv4(value, field, allow_empty=True)
+
+    if config.params.subnet_mask:
+        try:
+            ipaddress.IPv4Network(
+                f"0.0.0.0/{config.params.subnet_mask}",
+                strict=False,
+            )
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as exc:
+            raise ValueError("Invalid subnet mask") from exc
+
+    if config.params.dns:
+        for dns in config.params.dns.split(","):
+            _validate_ipv4(dns.strip(), "DNS server", allow_empty=True)
+
+    if not config.dhcp:
+        _validate_ipv4(config.params.ip, "IP address")
+        if not config.params.subnet_mask:
+            raise ValueError("Subnet mask is required")
 
 async def get_iface_mac(iface: str) -> str:
     retval, output = await utils.shell(f"ip address show dev {iface}")
@@ -183,6 +258,12 @@ def save_network_ui_config(
 
 
 async def set_network_config(config: models.BaseNetworkConfig):
+    validate_network_config(config)
+    async with NETWORK_APPLY_MUTEX:
+        await _set_network_config_locked(config)
+
+
+async def _set_network_config_locked(config: models.BaseNetworkConfig):
     logger.info("Setting network configuration...")
     try:
         with open(NETWORK_APPLY_LOCK_FILE, "w") as f:
@@ -239,7 +320,6 @@ async def set_network_config(config: models.BaseNetworkConfig):
 
         logger.info(nw_config.type)
         logger.info(nw_config.ssid)
-        logger.info(nw_config.psk)
         logger.info(nw_config.ip)
         logger.info(nw_config.mask)
         logger.info(nw_config.gateway)
@@ -256,10 +336,18 @@ async def set_network_config(config: models.BaseNetworkConfig):
 
 async def reset_network_config():
     logger.info("Resetting network configuration...")
-    #TODO
-    _forget_network_ui_config()
-    nw_config = NetworkConfig()
-    await nw_config.reset_nw_config()
+    async with NETWORK_APPLY_MUTEX:
+        try:
+            with open(NETWORK_APPLY_LOCK_FILE, "w") as f:
+                f.write(str(os.getpid()))
+            _forget_network_ui_config()
+            nw_config = NetworkConfig()
+            await nw_config.reset_nw_config()
+        finally:
+            try:
+                os.remove(NETWORK_APPLY_LOCK_FILE)
+            except FileNotFoundError:
+                pass
 
 async def write_services(ssh, snmp, modbus):
     logger.info("Writing services")
