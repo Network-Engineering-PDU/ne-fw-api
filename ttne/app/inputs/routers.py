@@ -37,7 +37,11 @@ async def get_status() -> int: #TODO: change output type
 @router.get("/fw-version")
 async def get_fw_version() -> Union[models.InputFwVersion, None]:
     pmb = PDU.get_pmb()
-    fw_ver = version.parse(pmb.get_fw_version())
+    fw_ver_raw = pmb.get_fw_version()
+    if fw_ver_raw is None:
+        logger.error("PMB firmware version is unavailable")
+        return None
+    fw_ver = version.parse(fw_ver_raw)
     logger.info(f"PMB FW version: {str(fw_ver)}")
     return models.InputFwVersion(major=fw_ver.major, minor=fw_ver.minor,
             fix=fw_ver.micro)

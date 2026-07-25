@@ -56,6 +56,8 @@ LOGGING_CONFIG: Dict[str, Any] = {
 }
 
 class Server:
+    PMB_STARTUP_TIMEOUT_SECONDS = 135
+
     def __init__(self):
         self.server = None
         self.pdu_sender = None
@@ -147,13 +149,26 @@ class Server:
             uart = Uart("/dev/ttymxc4")
             PDU.init_pmb(uart)
             pmb = PDU.get_pmb()
-            await pmb.update_fw()
+            try:
+                await asyncio.wait_for(
+                    pmb.update_fw(),
+                    timeout=self.PMB_STARTUP_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "PMB startup timed out after %s seconds; continuing startup",
+                    self.PMB_STARTUP_TIMEOUT_SECONDS,
+                )
             pmb.reset()
             await asyncio.sleep(5)
             pmb._get_switches()
         except RuntimeError:
             logger.error("Uart not present")
             #TODO exit or something??
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("PMB initialization failed; continuing startup")
 
     async def start_pmb_measures(self):
         try:

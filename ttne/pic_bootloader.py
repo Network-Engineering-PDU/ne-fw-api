@@ -1,6 +1,7 @@
 from typing import Dict
 import asyncio
 import logging
+import time
 
 import struct
 
@@ -17,6 +18,9 @@ MAX_SEND = 64
 logger = logging.getLogger(__name__)
 
 class BLUart:
+    RESPONSE_TIMEOUT_SECONDS = 5
+    POLL_INTERVAL_SECONDS = 0.01
+
     def __init__(self, uart):
         self.uart = uart
 
@@ -24,15 +28,15 @@ class BLUart:
         self.uart.clean()
         self.uart.send_msg(data)
         ret = await self.recv()
-        #TODO timeout?
 
         return ret == "K"
 
     async def recv(self):
         colon = False
         retries = 0
-        while True:
-            msg = self.uart.get_byte(1) # Timeout = 1s
+        deadline = time.monotonic() + self.RESPONSE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            msg = self.uart.get_byte(0)
             if msg:
                 try:
                     c = msg.decode("utf-8")
@@ -48,6 +52,13 @@ class BLUart:
                     colon = True
                 elif colon:
                     return c
+            else:
+                await asyncio.sleep(self.POLL_INTERVAL_SECONDS)
+        logger.error(
+            "Timed out waiting %.1f seconds for PMB bootloader response",
+            self.RESPONSE_TIMEOUT_SECONDS,
+        )
+        return None
 
 class PicBootloader:
     def __init__(self, uart):
@@ -129,5 +140,3 @@ class PicBootloader:
             return False
 
         return True
-
-

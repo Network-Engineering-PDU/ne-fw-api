@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 class Pmb:
     pmb = None
+    UPDATE_TIMEOUT_SECONDS = 120
+    BOOTLOADER_SETTLE_SECONDS = 1.5
+    POST_UPDATE_SETTLE_SECONDS = 4
 
     opcode_to_line = {
         "C": 0,
@@ -108,6 +111,12 @@ class Pmb:
         # This function should be executed before complete initialization and
         # before starting measure task
         pmb_ver = self.get_fw_version()
+        if pmb_ver is None:
+            logger.error(
+                "Skipping PMB firmware update: firmware version could not be read"
+            )
+            return False
+
         logger.info(f"PMB version: {pmb_ver} (required: {PMB_VERSION})")
         if (config.PMB_UPDATE_FORCE or \
                 version.parse(PMB_VERSION) > version.parse(pmb_ver)):
@@ -120,17 +129,41 @@ class Pmb:
                     break
             if update_file is None:
                 logger.error(f"Update file not found")
-                return
-            await bl.load_hex(update_file)
-            self.reset()
-            time.sleep(1.5)
-            ret = await bl.flash()
-            await asyncio.sleep(4)
+                return False
+            try:
+                await bl.load_hex(update_file)
+                self.reset()
+                await asyncio.sleep(self.BOOTLOADER_SETTLE_SECONDS)
+                ret = await asyncio.wait_for(
+                    bl.flash(),
+                    timeout=self.UPDATE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "PMB firmware update timed out after %s seconds",
+                    self.UPDATE_TIMEOUT_SECONDS,
+                )
+                return False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("PMB firmware update failed unexpectedly")
+                return False
+
             if ret:
+                await asyncio.sleep(self.POST_UPDATE_SETTLE_SECONDS)
                 new_pmb_ver = self.get_fw_version()
+                if new_pmb_ver is None:
+                    logger.error(
+                        "PMB update completed but firmware version verification failed"
+                    )
+                    return False
                 logger.info(f"PMB updated: {pmb_ver} -> {new_pmb_ver}")
+                return True
             else:
                 logger.error(f"PMB update FAILED")
+                return False
+        return True
 
     def get_pmb_data(self):
         return self.data
@@ -276,7 +309,7 @@ class Pmb:
         resp, data = self.get_uart_resp()
         if resp == None:
             logger.error("Error getting PMB firmware version")
-            return "0.0.0"
+            return None
         logger.info(f"PMB FW version: {data} (resp: {resp})")
         return data
 
