@@ -202,6 +202,17 @@ class Server:
 
         await self.server.lifespan.startup_event.wait()
 
+        if config.PLATFORM != "desktop":
+            # The SNMP helper reads this HTTP API, so restore it only after
+            # Uvicorn is accepting requests. The persisted service flag is
+            # intentionally left unchanged when startup fails so a later boot
+            # can retry.
+            from ttne.app.settings import functions as settings_functions
+            try:
+                await settings_functions.restore_snmp()
+            except Exception:
+                logger.exception("Could not restore SNMP service")
+
         self.ne = DjangoManager()
         self.loop.create_task(self.ne.start())
         await asyncio.sleep(40) # Wait for NE start

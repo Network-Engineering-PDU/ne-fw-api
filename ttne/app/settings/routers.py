@@ -169,12 +169,14 @@ async def post_stop_ssh():
     await functions.stop_ssh()
 
 @router.post("/start-snmp")
-async def post_start_snmp():
-    await functions.start_snmp()
+async def post_start_snmp(response: Response):
+    if not await functions.start_snmp():
+        response.status_code = 500
 
 @router.post("/stop-snmp")
-async def post_stop_snmp():
-    await functions.stop_snmp()
+async def post_stop_snmp(response: Response):
+    if not await functions.stop_snmp():
+        response.status_code = 500
 
 @router.post("/start-modbus")
 async def post_start_modbus():

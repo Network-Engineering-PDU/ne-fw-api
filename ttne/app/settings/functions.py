@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from ttne import utils
 from ttne.app.network import functions as nw_functions
 from ttne.config import Config
+from ttne.snmp_config import write_snmp_config
 from ttne.sn_pn_generator import *
 from .. import gateway_helper
 
@@ -24,7 +25,7 @@ from .. import gateway_helper
 logger = logging.getLogger(__name__)
 
 
-SNMP_NMS_FILE = "/tmp/ne_fw_api_snmp_nms"
+SNMP_NMS_FILE = "/home/root/.ne/snmp_nms"
 SWUPDATE_FILE = "/home/root/ttfile.bin"  # legacy; web/OTA use per-channel staging paths
 CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
@@ -97,12 +98,28 @@ async def read_snmp_nms() -> ["str", "str", "str"]:
     location = ""
     data = await utils.read_file(SNMP_NMS_FILE)
     if data:
-        name, contact, location = data.split("\n")
+        values = data.split("\n", 2)
+        values.extend([""] * (3 - len(values)))
+        name, contact, location = values
     return name, contact, location
 
 
 async def write_snmp_nms(name, contact, location):
-    data = "\n".join((name, contact, location))
+    os.makedirs(os.path.dirname(SNMP_NMS_FILE), exist_ok=True)
+    def safe_value(value):
+        text = (
+            str(value or "")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace("\0", "")
+        )
+        return text.encode("utf-8")[:255].decode(
+            "utf-8", errors="ignore"
+        )
+
+    data = "\n".join(safe_value(value) for value in (
+        name, contact, location
+    ))
     await utils.write_file(SNMP_NMS_FILE, data)
 
 
@@ -491,32 +508,54 @@ async def stop_ssh():
     if retval != 0:
         logger.warning("Can not stop SSH")
 
+async def _launch_snmp():
+    try:
+        os.makedirs("/home/root/snmp", exist_ok=True)
+        write_snmp_config()
+    except OSError:
+        logger.exception("Can not prepare SNMP configuration")
+        return False
+    retval, _ = await utils.shell("/etc/init.d/snmpd start")
+    if retval != 0:
+        logger.warning("Can not start SNMP")
+        return False
+    return True
+
+
 async def start_snmp():
     logger.info("Starting SNMP...")
     ssh, snmp, modbus = await nw_functions.read_services()
     if snmp:
-        logger.warning("SNMP alredy started")
-        return
+        logger.info("SNMP is enabled; ensuring daemon is running")
+        return await _launch_snmp()
+    if not await _launch_snmp():
+        return False
     await nw_functions.write_services(ssh, 1, modbus)
-    os.makedirs("/home/root/snmp", exist_ok=True)
-    retval, _ = await utils.shell("cp /usr/share/ttsnmp/ne_snmpd.conf /home/root/snmp/snmpd.conf")
-    if retval != 0:
-        logger.warning("Can not copy SNMP configuration file")
-    retval, _ = await utils.shell("/etc/init.d/snmpd start")
-    if retval != 0:
-        logger.warning("Can not start SNMP")
+    return True
+
+
+async def restore_snmp():
+    """Restore SNMP after boot when it was enabled persistently."""
+    _ssh, snmp, _modbus = await nw_functions.read_services()
+    if not snmp:
+        logger.info("SNMP is disabled; leaving daemon stopped")
+        return True
+    logger.info("Restoring enabled SNMP service")
+    return await _launch_snmp()
+
 
 async def stop_snmp():
     logger.info("Stopping SNMP...")
     ssh, snmp, modbus = await nw_functions.read_services()
     if not snmp:
-        logger.warning("SNMP alredy stopped")
-        return
-    await nw_functions.write_services(ssh, 0, modbus)
+        logger.info("SNMP is disabled; ensuring daemon is stopped")
     retval, _ = await utils.shell("/etc/init.d/snmpd stop")
     if retval != 0:
         logger.warning("Can not stop SNMP")
-        return
+        return False
+    if snmp:
+        await nw_functions.write_services(ssh, 0, modbus)
+    return True
 
 async def start_modbus():
     logger.info("Starting Modbus...")

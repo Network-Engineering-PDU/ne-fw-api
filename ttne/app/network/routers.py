@@ -1,3 +1,6 @@
+import json
+import os
+
 from fastapi import APIRouter, Response
 
 from ttne import utils
@@ -6,6 +9,7 @@ from . import models, functions
 
 
 MODULE_NAME = "network"
+SNMP_CONFIG_FILE = "/home/root/.ne/snmp_config.json"
 
 router = APIRouter(
     prefix="/" + MODULE_NAME,
@@ -96,6 +100,7 @@ async def get_snmp_settings() -> models.SnmpConfig:
 async def put_snmp_settings(data: models.SnmpConfig):
     global snmp_config
     snmp_config = data
+    _save_snmp_settings()
 
 snmp_detailed_settings = models.SnmpDetailedConfig(
     port=161,
@@ -112,6 +117,36 @@ snmp_detailed_settings = models.SnmpDetailedConfig(
     )
 )
 
+
+def _save_snmp_settings():
+    os.makedirs(os.path.dirname(SNMP_CONFIG_FILE), exist_ok=True)
+    temporary = SNMP_CONFIG_FILE + ".tmp"
+    payload = {
+        "settings": snmp_config.dict(),
+        "detailed_settings": snmp_detailed_settings.dict(),
+    }
+    with open(temporary, "w", encoding="utf-8") as config_file:
+        json.dump(payload, config_file, sort_keys=True)
+        config_file.write("\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, SNMP_CONFIG_FILE)
+
+
+def _load_snmp_settings():
+    global snmp_config, snmp_detailed_settings
+    try:
+        with open(SNMP_CONFIG_FILE, "r", encoding="utf-8") as config_file:
+            payload = json.load(config_file)
+        snmp_config = models.SnmpConfig(**payload["settings"])
+        snmp_detailed_settings = models.SnmpDetailedConfig(
+            **payload["detailed_settings"]
+        )
+    except (FileNotFoundError, OSError, KeyError, TypeError, ValueError):
+        return
+
+
+_load_snmp_settings()
+
 @router.get("/snmp/detailed-settings")
 async def get_snmp_detailed_settings() -> models.SnmpDetailedConfig:
     return snmp_detailed_settings
@@ -120,3 +155,4 @@ async def get_snmp_detailed_settings() -> models.SnmpDetailedConfig:
 async def put_snmp_detailed_settings(data: models.SnmpDetailedConfig):
     global snmp_detailed_settings
     snmp_detailed_settings = data
+    _save_snmp_settings()
