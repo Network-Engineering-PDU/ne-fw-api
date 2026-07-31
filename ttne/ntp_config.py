@@ -150,7 +150,10 @@ async def service_status() -> Dict[str, bool]:
     settings = load_settings()
     if not settings["enabled"]:
         return {"running": False, "synchronized": False}
-    return_code, output = await utils.exec_command("chronyc", "tracking")
+    # Avoid reverse-DNS lookups here. On isolated PDU networks chronyc can
+    # print tracking data and then wait indefinitely while resolving the
+    # selected source, which would leave the API request open.
+    return_code, output = await utils.exec_command("chronyc", "-n", "tracking")
     if return_code != 0:
         return {"running": False, "synchronized": False}
     synchronized = any(

@@ -82,6 +82,7 @@ class NtpConfigTest(unittest.TestCase):
         with patch.object(ntp_config.utils, "exec_command", shell):
             status = asyncio.run(ntp_config.service_status())
         self.assertEqual({"running": True, "synchronized": True}, status)
+        shell.assert_awaited_once_with("chronyc", "-n", "tracking")
 
 
 if __name__ == "__main__":
