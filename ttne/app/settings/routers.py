@@ -7,6 +7,7 @@ from fastapi import APIRouter, Response, File, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from ttne.server import PDU
+from ttne import ntp_config
 from ttne.sn_pn_generator import *
 from . import models, functions
 from .. import gateway_helper
@@ -63,6 +64,22 @@ async def get_snmp_nms() -> models.SnmpNms:
     if name or contact or location:
         return models.SnmpNms(system_name=name, system_contact=contact, system_location=location)
     return models.SnmpNms()
+
+
+@router.get("/ntp", response_model=models.NtpStatus)
+async def get_ntp_settings():
+    settings = ntp_config.load_settings()
+    settings.update(await ntp_config.service_status())
+    return settings
+
+
+@router.put("/ntp", response_model=models.NtpStatus)
+async def put_ntp_settings(data: models.NtpSettings, response: Response):
+    settings = data.dict()
+    if not await ntp_config.apply_settings(settings):
+        response.status_code = 500
+    settings.update(await ntp_config.service_status())
+    return settings
 
 @router.put("/snmp-nms")
 async def put_snmp_nms(data: models.SnmpNms):

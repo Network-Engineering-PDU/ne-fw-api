@@ -18,6 +18,7 @@ from ttne import utils
 from ttne.app.network import functions as nw_functions
 from ttne.config import Config
 from ttne.snmp_config import write_snmp_config
+from ttne import ntp_config
 from ttne.sn_pn_generator import *
 from .. import gateway_helper
 
@@ -877,6 +878,11 @@ async def init_persistent_settings():
     from ttne.update.coordinator import UpdateCoordinator
 
     logger.info("Initializing persistent settings")
+
+    try:
+        await ntp_config.restore_settings()
+    except Exception:
+        logger.exception("Could not initialize NTP settings")
     
     # Ensure defaults are written if files don't exist
     if not os.path.isfile(UPDATE_CONFIG_FILE):

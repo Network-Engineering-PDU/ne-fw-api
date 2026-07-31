@@ -1,7 +1,7 @@
 # pylint: disable=no-name-in-module
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, conint, validator
 from ttne.config import Config
 from ttne.version import OM_VERSION, PMB_VERSION
 
@@ -116,3 +116,19 @@ class BluetoothStatus(BaseModel):
     pairing_name: str = ""
     pairing_passkey: str = ""
     devices: List[BluetoothDevice] = []
+
+
+class NtpSettings(BaseModel):
+    enabled: bool = True
+    time_offset: conint(ge=-12, le=12) = 0
+    server: str = "0.openembedded.pool.ntp.org"
+
+    @validator("server")
+    def server_must_be_valid(cls, value):
+        from ttne.ntp_config import validate_server
+        return validate_server(value)
+
+
+class NtpStatus(NtpSettings):
+    running: bool = False
+    synchronized: bool = False
