@@ -120,7 +120,7 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         config._set_dual_lan_arp_settings = AsyncMock(return_value=True)
         config._read_ip_from_if = AsyncMock(side_effect=[
             ("192.168.1.100", "255.255.255.0", "192.168.1.1"),
-            ("192.168.1.200", "255.255.255.0", None),
+            ("192.168.1.200", "255.255.255.0", "192.168.1.254"),
         ])
         active_connections = {
             config.LAN1_CONN: config.LAN1_IFACE,
@@ -142,6 +142,10 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
                 "192.168.1.0/24", "dev", "eth1", "src", "192.168.1.100",
             ),
             call(
+                "ip", "-4", "route", "add", "table", "101",
+                "default", "via", "192.168.1.1", "dev", "eth1",
+            ),
+            call(
                 "ip", "-4", "rule", "add", "priority", "1001",
                 "from", "192.168.1.100/32", "table", "101",
             ),
@@ -150,6 +154,10 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
             call(
                 "ip", "-4", "route", "add", "table", "102",
                 "192.168.1.0/24", "dev", "eth0", "src", "192.168.1.200",
+            ),
+            call(
+                "ip", "-4", "route", "add", "table", "102",
+                "default", "via", "192.168.1.254", "dev", "eth0",
             ),
             call(
                 "ip", "-4", "rule", "add", "priority", "1002",
@@ -520,6 +528,34 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gw4", args)
         self.assertNotIn("ipv4.dns", args)
 
+    async def test_static_dual_profile_uses_its_gateway_and_metric(self):
+        config = NetworkConfig()
+        config.type = NetworkType.ETH_STATIC
+        config.mask = "255.255.255.0"
+        config.dns1 = "8.8.8.8"
+
+        with patch(
+            "ttne.network_config.utils.exec_command",
+            new=AsyncMock(return_value=(0, "")),
+        ) as exec_command:
+            success = await config._add_dual_lan_connection(
+                config.LAN2_CONN,
+                config.LAN2_IFACE,
+                "10.2.0.10",
+                "10.2.0.1",
+                100,
+            )
+
+        self.assertTrue(success)
+        self.assertEqual(exec_command.await_args.args, (
+            "nmcli", "connection", "add", "type", "ethernet",
+            "con-name", config.LAN2_CONN, "ifname", config.LAN2_IFACE,
+            "ip4", "10.2.0.10/24", "gw4", "10.2.0.1",
+            "ipv4.dns", "8.8.8.8", "ipv4.route-metric", "100",
+            "connection.autoconnect", "yes",
+            "connection.autoconnect-retries", "0",
+        ))
+
     async def test_dual_lan_removes_stale_wifi_profile(self):
         config = NetworkConfig()
         config.nw_mode = config.NW_DUAL_LAN
@@ -537,6 +573,45 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
             await config.set_dual_lan()
 
         config._delete_wifi_connection.assert_awaited_once_with()
+
+    async def test_dual_lan_uses_independent_gateways_and_preferred_metric(self):
+        config = NetworkConfig()
+        config.nw_mode = config.NW_DUAL_LAN
+        config.type = NetworkType.ETH_STATIC
+        config.eth_interface = config.LAN2_IFACE
+        config.lan1_ip = "10.1.0.10"
+        config.lan1_gateway = "10.1.0.1"
+        config.lan2_ip = "10.2.0.10"
+        config.lan2_gateway = "10.2.0.1"
+        config._disable_auto_wired_connections = AsyncMock()
+        config._delete_wifi_connection = AsyncMock()
+        config._add_dual_lan_connection = AsyncMock(return_value=True)
+        config._get_linked_eth_interfaces = AsyncMock(return_value=[])
+        config._get_active_connections = AsyncMock(return_value={})
+        config._apply_dual_lan_policy_routing = AsyncMock(return_value=True)
+
+        with patch(
+            "ttne.network_config.utils.shell",
+            new=AsyncMock(return_value=(0, "")),
+        ):
+            await config.set_dual_lan()
+
+        self.assertEqual(config._add_dual_lan_connection.await_args_list, [
+            call(
+                config.LAN1_CONN,
+                config.LAN1_IFACE,
+                "10.1.0.10",
+                "10.1.0.1",
+                200,
+            ),
+            call(
+                config.LAN2_CONN,
+                config.LAN2_IFACE,
+                "10.2.0.10",
+                "10.2.0.1",
+                100,
+            ),
+        ])
 
 
 if __name__ == "__main__":

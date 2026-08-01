@@ -41,7 +41,9 @@ class NetworkConfig():
         self.eth_interface = None  # Preferred ethernet port; profile remains usable on either port.
         self.nw_mode = self.NW_SINGLE_LAN
         self.lan1_ip = None
+        self.lan1_gateway = None
         self.lan2_ip = None
+        self.lan2_gateway = None
         self.wifi_ip = None
         self._dual_lan_policy_initialized = False
         self.reset()
@@ -58,7 +60,9 @@ class NetworkConfig():
         self.eth_interface = None   # Preferred ethernet port; profile remains usable on either port.
         self.nw_mode = self.NW_SINGLE_LAN
         self.lan1_ip = "192.168.1.100"
+        self.lan1_gateway = "192.168.1.1"
         self.lan2_ip = "192.168.1.200"
+        self.lan2_gateway = ""
         self.wifi_ip = ""
 
     def is_static(self):
@@ -300,7 +304,7 @@ class NetworkConfig():
             if active_connections.get(connection) != iface:
                 continue
 
-            ip, mask, _ = await self._read_ip_from_if(iface)
+            ip, mask, gateway = await self._read_ip_from_if(iface)
             if ip is None or mask is None:
                 logger.warning(
                     "Can not configure source routing for %s: no IPv4 address",
@@ -322,6 +326,20 @@ class NetworkConfig():
                     output.strip(),
                 )
                 success = False
+
+            if gateway:
+                retval, output = await utils.exec_command(
+                    "ip", "-4", "route", "add", "table", str(table),
+                    "default", "via", gateway, "dev", iface,
+                )
+                if retval != 0:
+                    logger.warning(
+                        "Can not configure default route table %s for %s: %s",
+                        table,
+                        iface,
+                        output.strip(),
+                    )
+                    success = False
 
             retval, output = await utils.exec_command(
                 "ip", "-4", "rule", "add", "priority", str(priority),
@@ -370,7 +388,7 @@ class NetworkConfig():
                     return False
                 continue
 
-            ip, mask, _ = await self._read_ip_from_if(iface)
+            ip, mask, gateway = await self._read_ip_from_if(iface)
             if ip is None or mask is None:
                 return False
             expected_rule_tokens = {
@@ -403,6 +421,16 @@ class NetworkConfig():
             }
             if not route_tokens.issubset(set(routes.split())):
                 return False
+            if gateway:
+                default_tokens = {
+                    "default",
+                    "via",
+                    gateway,
+                    "dev",
+                    iface,
+                }
+                if not default_tokens.issubset(set(routes.split())):
+                    return False
 
         return True
 
@@ -675,7 +703,9 @@ class NetworkConfig():
                 self.LAN2_IFACE
             )
             self.lan1_ip = lan1_ip or self.lan1_ip
+            self.lan1_gateway = lan1_gateway or ""
             self.lan2_ip = lan2_ip or self.lan2_ip
+            self.lan2_gateway = lan2_gateway or ""
             self.ip = self.lan1_ip or self.lan2_ip or self.ip
             self.mask = lan1_mask or lan2_mask or self.mask
             self.gateway = lan1_gateway or lan2_gateway or self.gateway
@@ -782,7 +812,8 @@ class NetworkConfig():
         connection,
         iface,
         ip,
-        never_default=False,
+        gateway,
+        route_metric,
     ):
         args = [
             "nmcli", "connection", "add", "type", "ethernet",
@@ -791,20 +822,17 @@ class NetworkConfig():
         if self.is_static():
             iface_ip = ipaddress.IPv4Interface(f"{ip}/{self.mask}")
             args.extend(["ip4", str(iface_ip)])
-            if not never_default and self.gateway:
-                args.extend(["gw4", self.gateway])
-            if not never_default:
-                dns_value = self.dns1
-                if self.dns2:
-                    dns_value = f"{self.dns1},{self.dns2}"
-                if dns_value:
-                    args.extend(["ipv4.dns", dns_value])
+            if gateway:
+                args.extend(["gw4", gateway])
+            dns_value = self.dns1
+            if self.dns2:
+                dns_value = f"{self.dns1},{self.dns2}"
+            if dns_value:
+                args.extend(["ipv4.dns", dns_value])
         else:
             args.extend(["ipv4.method", "auto"])
-
-        if never_default:
-            args.extend(["ipv4.never-default", "yes"])
         args.extend([
+            "ipv4.route-metric", str(route_metric),
             "connection.autoconnect", "yes",
             "connection.autoconnect-retries", "0",
         ])
@@ -836,6 +864,12 @@ class NetworkConfig():
         )
         self.mask = saved.get("subnet_mask") or self.mask
         self.gateway = saved.get("gateway_ip") or ""
+        self.lan1_gateway = (
+            saved.get("lan1_gateway")
+            if "lan1_gateway" in saved
+            else self.gateway
+        ) or ""
+        self.lan2_gateway = saved.get("lan2_gateway") or ""
         dns = (saved.get("dns") or "").split(",")
         self.dns1 = dns[0].strip() if dns else ""
         self.dns2 = dns[1].strip() if len(dns) > 1 else ""
@@ -850,18 +884,25 @@ class NetworkConfig():
             return False
 
         restored = True
+        preferred_iface = saved.get("eth_interface")
+        if preferred_iface not in (self.LAN1_IFACE, self.LAN2_IFACE):
+            preferred_iface = self.LAN1_IFACE
+
         if not profile_state[0]:
             restored = await self._add_dual_lan_connection(
                 self.LAN1_CONN,
                 self.LAN1_IFACE,
                 self.lan1_ip,
+                self.lan1_gateway,
+                100 if preferred_iface == self.LAN1_IFACE else 200,
             ) and restored
         if not profile_state[1]:
             restored = await self._add_dual_lan_connection(
                 self.LAN2_CONN,
                 self.LAN2_IFACE,
                 self.lan2_ip,
-                never_default=True,
+                self.lan2_gateway,
+                100 if preferred_iface == self.LAN2_IFACE else 200,
             ) and restored
         return restored
 
@@ -882,16 +923,24 @@ class NetworkConfig():
         self.mask = self.mask or "255.255.255.0"
         self.lan1_ip = self.lan1_ip or "192.168.1.100"
         self.lan2_ip = self.lan2_ip or "192.168.1.200"
+        preferred_iface = (
+            self.eth_interface
+            if self.eth_interface in (self.LAN1_IFACE, self.LAN2_IFACE)
+            else self.LAN1_IFACE
+        )
         await self._add_dual_lan_connection(
             self.LAN1_CONN,
             self.LAN1_IFACE,
             self.lan1_ip,
+            self.lan1_gateway,
+            100 if preferred_iface == self.LAN1_IFACE else 200,
         )
         await self._add_dual_lan_connection(
             self.LAN2_CONN,
             self.LAN2_IFACE,
             self.lan2_ip,
-            never_default=True,
+            self.lan2_gateway,
+            100 if preferred_iface == self.LAN2_IFACE else 200,
         )
 
         linked_ifaces = await self._get_linked_eth_interfaces()

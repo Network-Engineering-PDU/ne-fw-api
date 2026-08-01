@@ -18,6 +18,7 @@ NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
 NETWORK_APPLY_MUTEX = asyncio.Lock()
 DEFAULT_LAN1_IP = "192.168.1.100"
 DEFAULT_LAN2_IP = "192.168.1.200"
+DEFAULT_GATEWAY = "192.168.1.1"
 LEGACY_DEFAULT_LAN2_IP = "192.168.1.101"
 
 
@@ -131,7 +132,9 @@ def validate_network_config(config: models.BaseNetworkConfig):
         (config.params.ip, "IP address"),
         (config.params.gateway_ip, "Gateway"),
         (config.lan1_ip, "LAN1 IP address"),
+        (config.lan1_gateway, "LAN1 gateway"),
         (config.lan2_ip, "LAN2 IP address"),
+        (config.lan2_gateway, "LAN2 gateway"),
         (config.wifi_ip, "WiFi IP address"),
     ):
         _validate_ipv4(value, field, allow_empty=True)
@@ -153,6 +156,20 @@ def validate_network_config(config: models.BaseNetworkConfig):
         _validate_ipv4(config.params.ip, "IP address")
         if not config.params.subnet_mask:
             raise ValueError("Subnet mask is required")
+        if config.nw_mode == NetworkConfig.NW_DUAL_LAN:
+            for address, gateway, name in (
+                (config.lan1_ip, config.lan1_gateway, "LAN1"),
+                (config.lan2_ip, config.lan2_gateway, "LAN2"),
+            ):
+                _validate_ipv4(address, f"{name} IP address")
+                _validate_ipv4(gateway, f"{name} gateway")
+                network = ipaddress.IPv4Network(
+                    f"{address}/{config.params.subnet_mask}", strict=False
+                )
+                if ipaddress.IPv4Address(gateway) not in network:
+                    raise ValueError(
+                        f"{name} gateway must be in the same subnet as {name}"
+                    )
 
 async def get_iface_mac(iface: str) -> str:
     retval, output = await utils.shell(f"ip address show dev {iface}")
@@ -176,13 +193,32 @@ async def get_network_config() -> models.MacNetworkConfig:
     await nw_config.get_wifi_ssid()
     await nw_config.get_static()
     ui_config = _load_network_ui_config()
-    eth_iface = await nw_config._get_active_eth_if() or nw_config.eth_interface or "eth0"
+    detected_eth_iface = await nw_config._get_active_eth_if()
+    eth_iface = _coalesce(
+        ui_config.get("eth_interface"),
+        nw_config.eth_interface,
+        detected_eth_iface,
+        "eth0",
+    )
     nw_config.eth_interface = eth_iface  # Store the detected interface
 
     nw_mode = _saved_int(ui_config, "nw_mode", nw_config.nw_mode)
     lan1_ip = _coalesce(ui_config.get("lan1_ip"), nw_config.lan1_ip, DEFAULT_LAN1_IP)
     lan2_ip = _normalize_lan2_ip(
         _coalesce(ui_config.get("lan2_ip"), nw_config.lan2_ip, DEFAULT_LAN2_IP)
+    )
+    legacy_gateway = _coalesce(
+        ui_config.get("gateway_ip"), nw_config.gateway, DEFAULT_GATEWAY
+    )
+    lan1_gateway = (
+        ui_config.get("lan1_gateway")
+        if "lan1_gateway" in ui_config
+        else _coalesce(nw_config.lan1_gateway, legacy_gateway)
+    )
+    lan2_gateway = (
+        ui_config.get("lan2_gateway")
+        if "lan2_gateway" in ui_config
+        else (nw_config.lan2_gateway or "")
     )
     wifi_ip = _coalesce(ui_config.get("wifi_ip"), nw_config.wifi_ip)
 
@@ -207,7 +243,9 @@ async def get_network_config() -> models.MacNetworkConfig:
         eth_interface=config_params.eth_interface,
         nw_mode=nw_mode,
         lan1_ip=lan1_ip,
+        lan1_gateway=lan1_gateway,
         lan2_ip=lan2_ip,
+        lan2_gateway=lan2_gateway,
         wifi_ip=wifi_ip,
     )
     logger.info(network_config)
@@ -252,7 +290,13 @@ def save_network_ui_config(
         "ssid": config.params.ssid or "",
         "eth_interface": eth_interface,
         "lan1_ip": lan1_ip,
+        "lan1_gateway": (
+            getattr(config, "lan1_gateway", None)
+            if getattr(config, "lan1_gateway", None) is not None
+            else (config.params.gateway_ip or "")
+        ),
         "lan2_ip": lan2_ip,
+        "lan2_gateway": getattr(config, "lan2_gateway", None) or "",
         "wifi_ip": wifi_ip,
     })
 
@@ -291,9 +335,15 @@ async def _set_network_config_locked(config: models.BaseNetworkConfig):
             nw_config.eth_interface = detected or "eth1"
 
         nw_config.lan1_ip = getattr(config, 'lan1_ip', None) or config.params.ip or DEFAULT_LAN1_IP
+        nw_config.lan1_gateway = (
+            getattr(config, "lan1_gateway", None)
+            if getattr(config, "lan1_gateway", None) is not None
+            else (config.params.gateway_ip or "")
+        )
         nw_config.lan2_ip = _normalize_lan2_ip(
             getattr(config, 'lan2_ip', None) or DEFAULT_LAN2_IP
         )
+        nw_config.lan2_gateway = getattr(config, "lan2_gateway", None) or ""
         nw_config.wifi_ip = getattr(config, 'wifi_ip', None) or ""
 
         save_network_ui_config(
