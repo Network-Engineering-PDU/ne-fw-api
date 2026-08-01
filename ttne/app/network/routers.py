@@ -156,3 +156,57 @@ async def put_snmp_detailed_settings(data: models.SnmpDetailedConfig):
     global snmp_detailed_settings
     snmp_detailed_settings = data
     _save_snmp_settings()
+
+
+def _manager_value(value):
+    value = str(value or "").strip()
+    return value or None
+
+
+@router.get("/snmp/display-settings")
+async def get_snmp_display_settings() -> models.SnmpDisplayConfig:
+    _ssh, enabled, _modbus = await functions.read_services()
+    version = snmp_detailed_settings.snmp_v1_v2c
+    trap = snmp_detailed_settings.trap
+    return models.SnmpDisplayConfig(
+        enabled=bool(enabled),
+        set_enabled=snmp_detailed_settings.set_enabled,
+        community=(version.read_community if version else "public"),
+        traps_enabled=bool(snmp_config.trap_alarm and trap.alarm),
+        manager_1=trap.manager_1_ip,
+        manager_2=trap.manager_2_ip,
+        manager_3=trap.manager_3_ip,
+        manager_4=trap.manager_4_ip,
+    )
+
+
+@router.put("/snmp/display-settings")
+async def put_snmp_display_settings(
+        data: models.SnmpDisplayConfig, response: Response
+        ) -> models.SnmpDisplayConfig:
+    global snmp_config, snmp_detailed_settings
+    from ttne.app.settings import functions as settings_functions
+
+    detailed = snmp_detailed_settings.dict()
+    detailed["set_enabled"] = data.set_enabled
+    version = dict(detailed.get("snmp_v1_v2c") or {})
+    version["read_community"] = data.community
+    version.setdefault("write_community", "Private")
+    detailed["snmp_v1_v2c"] = version
+    trap = dict(detailed.get("trap") or {})
+    trap["alarm"] = data.traps_enabled
+    for index in range(1, 5):
+        trap[f"manager_{index}_ip"] = _manager_value(
+            getattr(data, f"manager_{index}")
+        )
+        trap.setdefault(f"manager_{index}_name", f"Trap manager {index}")
+    detailed["trap"] = trap
+
+    snmp_detailed_settings = models.SnmpDetailedConfig(**detailed)
+    snmp_config = snmp_config.copy(update={
+        "trap_alarm": data.traps_enabled,
+    })
+    _save_snmp_settings()
+    if not await settings_functions.apply_snmp_configuration(data.enabled):
+        response.status_code = 500
+    return await get_snmp_display_settings()

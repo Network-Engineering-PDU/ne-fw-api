@@ -46,6 +46,7 @@ def write_snmp_config(
     port = 161
     read_community = "public"
     write_community = "private"
+    set_enabled = True
     try:
         with open(settings_file, "r", encoding="utf-8") as config_file:
             detailed = json.load(config_file).get("detailed_settings", {})
@@ -55,6 +56,7 @@ def write_snmp_config(
             if 1 <= configured_port <= 65535:
                 port = configured_port
         version = detailed.get("snmp_v1_v2c") or {}
+        set_enabled = bool(detailed.get("set_enabled", True))
         read_community = _community(
             version.get("read_community"), read_community
         )
@@ -104,7 +106,7 @@ def write_snmp_config(
         "rwcommunity": (
             f"rwcommunity {write_community} default "
             ".1.3.6.1.4.1.2000.1\n"
-        ),
+        ) if set_enabled else "",
     }
     rendered = []
     for line in lines:

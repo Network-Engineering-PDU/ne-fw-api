@@ -63,6 +63,23 @@ class SnmpServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(restored)
 
+    async def test_apply_restarts_enabled_daemon_with_new_config(self):
+        with patch.object(
+                functions.nw_functions, "read_services",
+                AsyncMock(return_value=(1, 1, 0))), patch.object(
+                functions.nw_functions, "write_services",
+                AsyncMock()) as write_services, patch.object(
+                functions.os, "makedirs"), patch.object(
+                functions, "write_snmp_config") as write_config, patch.object(
+                functions.utils, "shell",
+                AsyncMock(return_value=(0, ""))) as shell:
+            applied = await functions.apply_snmp_configuration(True)
+
+        self.assertTrue(applied)
+        write_config.assert_called_once_with()
+        shell.assert_awaited_once_with("/etc/init.d/snmpd restart")
+        write_services.assert_awaited_once_with(1, 1, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

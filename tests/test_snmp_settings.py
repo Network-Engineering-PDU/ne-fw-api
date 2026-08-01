@@ -122,6 +122,27 @@ class SnmpSettingsTest(unittest.TestCase):
         self.assertIn("agentAddress  udp:161", rendered)
         self.assertNotIn("\0", rendered)
 
+    def test_set_access_can_be_disabled(self):
+        with open(self.settings, "w", encoding="utf-8") as settings_file:
+            json.dump({
+                "detailed_settings": {
+                    "set_enabled": False,
+                    "snmp_v1_v2c": {
+                        "read_community": "monitor",
+                        "write_community": "control",
+                    },
+                },
+            }, settings_file)
+
+        write_snmp_config(
+            self.source, self.destination, self.settings, self.nms
+        )
+
+        with open(self.destination, "r", encoding="utf-8") as config_file:
+            rendered = config_file.read()
+        self.assertIn("rocommunity monitor", rendered)
+        self.assertNotIn("rwcommunity", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
