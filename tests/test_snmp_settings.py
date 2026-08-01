@@ -50,10 +50,9 @@ class SnmpSettingsTest(unittest.TestCase):
         with open(self.destination, "r", encoding="utf-8") as config_file:
             rendered = config_file.read()
         self.assertIn("agentAddress  udp:1161", rendered)
-        self.assertIn("rocommunity monitor", rendered)
-        self.assertIn(
-            "rwcommunity control default .1.3.6.1.4.1.2000.1", rendered
-        )
+        self.assertIn("com2sec neSnmpRead default monitor", rendered)
+        self.assertIn("group neSnmpReadGroup v2c neSnmpRead", rendered)
+        self.assertIn("com2sec neSnmpWrite default control", rendered)
         self.assertIn('octet_str "PDU \\"A\\""', rendered)
         self.assertIn('octet_str "Rack\\\\One"', rendered)
         self.assertEqual(
@@ -77,10 +76,8 @@ class SnmpSettingsTest(unittest.TestCase):
         with open(self.destination, "r", encoding="utf-8") as config_file:
             rendered = config_file.read()
         self.assertIn("agentAddress  udp:161", rendered)
-        self.assertIn("rocommunity public", rendered)
-        self.assertIn(
-            "rwcommunity private default .1.3.6.1.4.1.2000.1", rendered
-        )
+        self.assertIn("com2sec neSnmpRead default public", rendered)
+        self.assertIn("com2sec neSnmpWrite default private", rendered)
         self.assertNotIn("attacker", rendered)
 
     def test_equal_read_and_write_communities_are_separated(self):
@@ -98,11 +95,8 @@ class SnmpSettingsTest(unittest.TestCase):
         )
         with open(self.destination, "r", encoding="utf-8") as config_file:
             rendered = config_file.read()
-        self.assertIn("rocommunity same", rendered)
-        self.assertIn(
-            "rwcommunity private default .1.3.6.1.4.1.2000.1",
-            rendered,
-        )
+        self.assertIn("com2sec neSnmpRead default same", rendered)
+        self.assertIn("com2sec neSnmpWrite default private", rendered)
 
     def test_boolean_port_and_unsafe_nms_characters_are_sanitized(self):
         with open(self.settings, "w", encoding="utf-8") as settings_file:
@@ -140,8 +134,98 @@ class SnmpSettingsTest(unittest.TestCase):
 
         with open(self.destination, "r", encoding="utf-8") as config_file:
             rendered = config_file.read()
-        self.assertIn("rocommunity monitor", rendered)
+        self.assertIn("com2sec neSnmpRead default monitor", rendered)
+        self.assertNotIn("neSnmpWrite", rendered)
+
+    def test_v1_and_v2c_select_distinct_security_models(self):
+        for configured, expected in (
+                ("V1", "v1"), ("V2c", "v2c"), ("V1/V2c", "v2c")):
+            with self.subTest(version=configured):
+                with open(self.settings, "w", encoding="utf-8") as settings_file:
+                    json.dump({
+                        "detailed_settings": {
+                            "version": configured,
+                            "snmp_v1_v2c": {
+                                "read_community": "monitor",
+                                "write_community": "control",
+                            },
+                        },
+                    }, settings_file)
+                write_snmp_config(
+                    self.source, self.destination, self.settings, self.nms
+                )
+                with open(self.destination, "r", encoding="utf-8") as config_file:
+                    rendered = config_file.read()
+                self.assertIn(
+                    f"group neSnmpReadGroup {expected} neSnmpRead",
+                    rendered,
+                )
+                other = "v2c" if expected == "v1" else "v1"
+                self.assertNotIn(
+                    f"group neSnmpReadGroup {other} neSnmpRead",
+                    rendered,
+                )
+
+    def test_v3_renders_usm_user_and_access(self):
+        with open(self.settings, "w", encoding="utf-8") as settings_file:
+            json.dump({
+                "detailed_settings": {
+                    "version": "V3",
+                    "set_enabled": True,
+                    "snmp_v3": {
+                        "usm_user": "operator",
+                        "security_level": "authPriv",
+                        "access_right": "readWrite",
+                        "auth_algorithm": "SHA",
+                        "auth_pwd": "AuthPass123",
+                        "privacy_algorithm": "AES",
+                        "privacy_pwd": "PrivPass123",
+                    },
+                },
+            }, settings_file)
+
+        write_snmp_config(
+            self.source, self.destination, self.settings, self.nms
+        )
+        with open(self.destination, "r", encoding="utf-8") as config_file:
+            rendered = config_file.read()
+        self.assertNotIn("rocommunity", rendered)
         self.assertNotIn("rwcommunity", rendered)
+        self.assertIn(
+            "rwuser operator priv", rendered
+        )
+        self.assertIn(
+            'createUser operator SHA "AuthPass123" AES "PrivPass123"',
+            rendered,
+        )
+
+    def test_invalid_v3_credentials_do_not_restore_community_access(self):
+        with open(self.settings, "w", encoding="utf-8") as settings_file:
+            json.dump({
+                "detailed_settings": {
+                    "version": "V3",
+                    "snmp_v3": {
+                        "usm_user": "operator",
+                        "security_level": "authPriv",
+                        "auth_algorithm": "SHA",
+                        "auth_pwd": "short",
+                        "privacy_algorithm": "AES",
+                        "privacy_pwd": "also-short",
+                    },
+                },
+            }, settings_file)
+
+        write_snmp_config(
+            self.source, self.destination, self.settings, self.nms
+        )
+        with open(self.destination, "r", encoding="utf-8") as config_file:
+            rendered = config_file.read()
+
+        self.assertNotIn("rocommunity", rendered)
+        self.assertNotIn("rwcommunity", rendered)
+        self.assertNotIn("createUser", rendered)
+        self.assertNotIn("rouser", rendered)
+        self.assertNotIn("rwuser", rendered)
 
 
 if __name__ == "__main__":

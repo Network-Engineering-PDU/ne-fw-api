@@ -72,12 +72,18 @@ class SnmpServiceTest(unittest.IsolatedAsyncioTestCase):
                 functions.os, "makedirs"), patch.object(
                 functions, "write_snmp_config") as write_config, patch.object(
                 functions.utils, "shell",
-                AsyncMock(return_value=(0, ""))) as shell:
+                AsyncMock(side_effect=[(0, ""), (0, "")])) as shell:
             applied = await functions.apply_snmp_configuration(True)
 
         self.assertTrue(applied)
         write_config.assert_called_once_with()
-        shell.assert_awaited_once_with("/etc/init.d/snmpd restart")
+        self.assertEqual(
+            [
+                unittest.mock.call("/etc/init.d/snmpd stop"),
+                unittest.mock.call("/etc/init.d/snmpd start"),
+            ],
+            shell.await_args_list,
+        )
         write_services.assert_awaited_once_with(1, 1, 0)
 
 

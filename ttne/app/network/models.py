@@ -7,6 +7,12 @@ from pydantic import BaseModel, constr, validator
 
 
 SnmpCommunity = constr(regex=r"^[A-Za-z0-9_.-]{1,64}$")
+SnmpV3User = constr(regex=r"^[A-Za-z0-9_.-]{1,32}$")
+SnmpV3Password = constr(
+    min_length=8,
+    max_length=64,
+    regex=r"^[A-Za-z0-9_.@#%+=:-]+$",
+)
 SnmpTrapTarget = constr(
     strip_whitespace=True,
     max_length=253,
@@ -96,11 +102,16 @@ class SnmpDetailedConfig(BaseModel):
     snmp_v1_v2c: Union[SnmpV1Config, None]
     snmp_v3: Union[Snmpv3Config, None]
     set_enabled: bool = True
+    version: Literal["V1", "V2c", "V3"] = "V2c"
+
+    @validator("version", pre=True)
+    def migrate_combined_version(cls, value):
+        return "V2c" if value == "V1/V2c" else value
 
 
 class SnmpDisplayConfig(BaseModel):
     enabled: bool
-    version: Literal["V1/V2c"] = "V1/V2c"
+    version: Literal["V1", "V2c", "V3"] = "V2c"
     set_enabled: bool
     community: SnmpCommunity
     traps_enabled: bool
@@ -108,6 +119,19 @@ class SnmpDisplayConfig(BaseModel):
     manager_2: Optional[SnmpTrapTarget] = None
     manager_3: Optional[SnmpTrapTarget] = None
     manager_4: Optional[SnmpTrapTarget] = None
+    v3_user: Optional[SnmpV3User] = None
+    v3_security_level: Literal[
+        "noAuthNoPriv", "authNoPriv", "authPriv"
+    ] = "authPriv"
+    v3_auth_algorithm: Literal["MD5", "SHA"] = "SHA"
+    v3_auth_password: Optional[SnmpV3Password] = None
+    v3_privacy_algorithm: Literal["DES", "AES"] = "AES"
+    v3_privacy_password: Optional[SnmpV3Password] = None
+    v3_configured: bool = False
+
+    @validator("version", pre=True)
+    def migrate_combined_version(cls, value):
+        return "V2c" if value == "V1/V2c" else value
 
     @validator("manager_1", "manager_2", "manager_3", "manager_4")
     def validate_trap_target(cls, value):

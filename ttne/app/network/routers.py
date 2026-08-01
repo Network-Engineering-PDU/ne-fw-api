@@ -1,7 +1,7 @@
 import json
 import os
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, HTTPException, Response
 
 from ttne import utils
 from ttne.network_config import NetworkConfig
@@ -149,7 +149,11 @@ _load_snmp_settings()
 
 @router.get("/snmp/detailed-settings")
 async def get_snmp_detailed_settings() -> models.SnmpDetailedConfig:
-    return snmp_detailed_settings
+    detailed = snmp_detailed_settings.copy(deep=True)
+    if detailed.snmp_v3:
+        detailed.snmp_v3.auth_pwd = ""
+        detailed.snmp_v3.privacy_pwd = ""
+    return detailed
 
 @router.put("/snmp/detailed-settings")
 async def put_snmp_detailed_settings(data: models.SnmpDetailedConfig):
@@ -168,8 +172,10 @@ async def get_snmp_display_settings() -> models.SnmpDisplayConfig:
     _ssh, enabled, _modbus = await functions.read_services()
     version = snmp_detailed_settings.snmp_v1_v2c
     trap = snmp_detailed_settings.trap
+    v3 = snmp_detailed_settings.snmp_v3
     return models.SnmpDisplayConfig(
         enabled=bool(enabled),
+        version=snmp_detailed_settings.version,
         set_enabled=snmp_detailed_settings.set_enabled,
         community=(version.read_community if version else "public"),
         traps_enabled=bool(snmp_config.trap_alarm and trap.alarm),
@@ -177,6 +183,11 @@ async def get_snmp_display_settings() -> models.SnmpDisplayConfig:
         manager_2=trap.manager_2_ip,
         manager_3=trap.manager_3_ip,
         manager_4=trap.manager_4_ip,
+        v3_user=(v3.usm_user if v3 else None),
+        v3_security_level=(v3.security_level if v3 else "authPriv"),
+        v3_auth_algorithm=(v3.auth_algorithm if v3 else "SHA"),
+        v3_privacy_algorithm=(v3.privacy_algorithm if v3 else "AES"),
+        v3_configured=bool(v3 and v3.usm_user),
     )
 
 
@@ -188,6 +199,7 @@ async def put_snmp_display_settings(
     from ttne.app.settings import functions as settings_functions
 
     detailed = snmp_detailed_settings.dict()
+    detailed["version"] = data.version
     detailed["set_enabled"] = data.set_enabled
     version = dict(detailed.get("snmp_v1_v2c") or {})
     version["read_community"] = data.community
@@ -201,6 +213,43 @@ async def put_snmp_display_settings(
         )
         trap.setdefault(f"manager_{index}_name", f"Trap manager {index}")
     detailed["trap"] = trap
+
+    if data.version == "V3":
+        if not data.v3_user:
+            raise HTTPException(status_code=400, detail="V3 user is required")
+        existing = snmp_detailed_settings.snmp_v3
+        same_user = bool(existing and existing.usm_user == data.v3_user)
+        auth_password = data.v3_auth_password or (
+            existing.auth_pwd if same_user else ""
+        )
+        privacy_password = data.v3_privacy_password or (
+            existing.privacy_pwd if same_user else ""
+        )
+        if (
+            data.v3_security_level in ("authNoPriv", "authPriv")
+            and len(auth_password) < 8
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="V3 authentication password must be at least 8 characters",
+            )
+        if (
+            data.v3_security_level == "authPriv"
+            and len(privacy_password) < 8
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="V3 privacy password must be at least 8 characters",
+            )
+        detailed["snmp_v3"] = models.Snmpv3Config(
+            usm_user=data.v3_user,
+            security_level=data.v3_security_level,
+            access_right="readWrite" if data.set_enabled else "readOnly",
+            auth_algorithm=data.v3_auth_algorithm,
+            auth_pwd=auth_password,
+            privacy_algorithm=data.v3_privacy_algorithm,
+            privacy_pwd=privacy_password,
+        ).dict()
 
     snmp_detailed_settings = models.SnmpDetailedConfig(**detailed)
     snmp_config = snmp_config.copy(update={

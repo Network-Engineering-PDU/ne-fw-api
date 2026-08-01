@@ -548,20 +548,22 @@ async def restore_snmp():
 async def apply_snmp_configuration(enabled):
     """Apply persisted SNMP settings and requested service state now."""
     ssh, snmp, modbus = await nw_functions.read_services()
-    if not enabled:
-        return await stop_snmp()
-    if not snmp:
-        return await start_snmp()
+    # Always stop first.  The persisted service flag can be stale if snmpd was
+    # started manually, and a clean start is required to process createUser.
+    retval, _ = await utils.shell("/etc/init.d/snmpd stop")
+    if retval != 0:
+        return False
     try:
         os.makedirs("/home/root/snmp", exist_ok=True)
         write_snmp_config()
     except OSError:
         logger.exception("Failed to render SNMP configuration")
         return False
-    retval, _ = await utils.shell("/etc/init.d/snmpd restart")
-    if retval != 0:
-        return False
-    await nw_functions.write_services(ssh, 1, modbus)
+    if enabled:
+        retval, _ = await utils.shell("/etc/init.d/snmpd start")
+        if retval != 0:
+            return False
+    await nw_functions.write_services(ssh, 1 if enabled else 0, modbus)
     return True
 
 

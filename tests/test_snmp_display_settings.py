@@ -85,6 +85,50 @@ class SnmpDisplaySettingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("traps.example.test", result.manager_1)
         self.assertEqual("192.0.2.10", result.manager_2)
 
+    async def test_v3_save_preserves_hidden_passwords_on_later_edits(self):
+        response = Response()
+        first = models.SnmpDisplayConfig(
+            enabled=True,
+            version="V3",
+            set_enabled=True,
+            community="public",
+            traps_enabled=False,
+            v3_user="operator",
+            v3_security_level="authPriv",
+            v3_auth_algorithm="SHA",
+            v3_auth_password="AuthPass123",
+            v3_privacy_algorithm="AES",
+            v3_privacy_password="PrivPass123",
+        )
+        second = first.copy(update={
+            "v3_auth_password": None,
+            "v3_privacy_password": None,
+        })
+        with patch.object(routers, "_save_snmp_settings"), patch(
+                "ttne.app.settings.functions.apply_snmp_configuration",
+                AsyncMock(return_value=True)), patch.object(
+                routers.functions, "read_services",
+                AsyncMock(return_value=(1, 1, 0))):
+            saved = await routers.put_snmp_display_settings(first, response)
+            saved_again = await routers.put_snmp_display_settings(
+                second, response
+            )
+
+        v3 = routers.snmp_detailed_settings.snmp_v3
+        self.assertEqual("AuthPass123", v3.auth_pwd)
+        self.assertEqual("PrivPass123", v3.privacy_pwd)
+        self.assertTrue(saved.v3_configured)
+        self.assertTrue(saved_again.v3_configured)
+        self.assertIsNone(saved.v3_auth_password)
+        self.assertIsNone(saved.v3_privacy_password)
+
+        detailed = await routers.get_snmp_detailed_settings()
+        self.assertEqual("", detailed.snmp_v3.auth_pwd)
+        self.assertEqual("", detailed.snmp_v3.privacy_pwd)
+        self.assertEqual(
+            "AuthPass123", routers.snmp_detailed_settings.snmp_v3.auth_pwd
+        )
+
     def test_rejects_unsafe_community_and_trap_target(self):
         with self.assertRaises(ValidationError):
             models.SnmpDisplayConfig(
