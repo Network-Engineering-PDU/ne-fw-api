@@ -9,6 +9,7 @@ from ttne.app import inputs
 from ttne.app import outputs
 from ttne.app import settings
 from ttne.app import network
+from ttne.app import user_access
 from ttne.app.settings import functions as settings_functions
 from ttne.network_config import NetworkConfig
 
@@ -46,3 +47,4 @@ app.include_router(inputs.router)
 app.include_router(outputs.router)
 app.include_router(settings.router)
 app.include_router(network.router)
+app.include_router(user_access.router)
