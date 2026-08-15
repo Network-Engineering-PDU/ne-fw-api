@@ -129,6 +129,38 @@ class SnmpDisplaySettingsTest(unittest.IsolatedAsyncioTestCase):
             "AuthPass123", routers.snmp_detailed_settings.snmp_v3.auth_pwd
         )
 
+    async def test_detailed_settings_preserve_passwords_and_reapply_service(self):
+        current = models.Snmpv3Config(
+            usm_user="operator",
+            security_level="authPriv",
+            access_right="readWrite",
+            auth_algorithm="SHA",
+            auth_pwd="AuthPass123",
+            privacy_algorithm="AES",
+            privacy_pwd="PrivPass123",
+        )
+        routers.snmp_detailed_settings = routers.snmp_detailed_settings.copy(
+            update={"version": "V3", "snmp_v3": current}
+        )
+        incoming = routers.snmp_detailed_settings.copy(
+            update={"snmp_v3": current.copy(update={
+                "auth_pwd": "", "privacy_pwd": ""
+            })}
+        )
+        with patch.object(routers, "_save_snmp_settings") as save, patch(
+                "ttne.app.settings.functions.apply_snmp_configuration",
+                AsyncMock(return_value=True)) as apply, patch.object(
+                routers.functions, "read_services",
+                AsyncMock(return_value=(1, 1, 0))):
+            result = await routers.put_snmp_detailed_settings(incoming)
+
+        save.assert_called_once_with()
+        apply.assert_awaited_once_with(True)
+        self.assertEqual("", result.snmp_v3.auth_pwd)
+        self.assertEqual(
+            "AuthPass123", routers.snmp_detailed_settings.snmp_v3.auth_pwd
+        )
+
     def test_rejects_unsafe_community_and_trap_target(self):
         with self.assertRaises(ValidationError):
             models.SnmpDisplayConfig(
@@ -153,6 +185,23 @@ class SnmpDisplaySettingsTest(unittest.IsolatedAsyncioTestCase):
                 traps_enabled=True,
                 manager_1="999.999.999.999",
             )
+        with self.assertRaises(ValidationError):
+            models.SnmpDetailedConfig(
+                port=0,
+                trap=models.SnmpTrapConfig(alarm=False),
+                snmp_v1_v2c=models.SnmpV1Config(
+                    read_community="public", write_community="private"
+                ),
+            )
+        with self.assertRaises(ValidationError):
+            models.SnmpTrapConfig(alarm=True, manager_1_ip="bad target!")
+        with self.assertRaises(ValidationError):
+            models.SnmpTrapConfig(
+                alarm=True, manager_1_ip="999.999.999.999"
+            )
+        self.assertIsNone(
+            models.SnmpTrapConfig(alarm=True, manager_1_ip="").manager_1_ip
+        )
 
 
 if __name__ == "__main__":
