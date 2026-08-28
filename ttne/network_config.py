@@ -16,9 +16,6 @@ class NetworkConfig():
 
     WIFI_CONN = "ble-wifi-conn"
     ETH_CONN = "ble-eth-conn"
-    BRIDGE_IFACE = "br0"
-    BRIDGE_LAN1_CONN = "ble-eth-bridge-lan1"
-    BRIDGE_LAN2_CONN = "ble-eth-bridge-lan2"
     LAN1_CONN = "ble-eth-lan1-conn"
     LAN2_CONN = "ble-eth-lan2-conn"
     LAN1_IFACE = "eth1"
@@ -41,7 +38,7 @@ class NetworkConfig():
         self.type = None
         self.ssid = None
         self.psk = None
-        self.eth_interface = None  # Preferred port for display/route metrics; Single-LAN bridges both ports.
+        self.eth_interface = None  # Preferred ethernet port; profile remains usable on either port.
         self.nw_mode = self.NW_SINGLE_LAN
         self.lan1_ip = None
         self.lan1_gateway = None
@@ -60,7 +57,7 @@ class NetworkConfig():
         self.type = NetworkType.ETH_STATIC
         self.ssid = ""
         self.psk = ""
-        self.eth_interface = None   # Preferred port for display/route metrics; Single-LAN bridges both ports.
+        self.eth_interface = None   # Preferred ethernet port; profile remains usable on either port.
         self.nw_mode = self.NW_SINGLE_LAN
         self.lan1_ip = "192.168.1.100"
         self.lan1_gateway = "192.168.1.1"
@@ -126,22 +123,6 @@ class NetworkConfig():
         retval, _ = await utils.shell(f"nmcli -t con show '{name}'")
         return retval == 0
 
-    async def _get_connection_type(self, name):
-        retval, output = await utils.exec_command(
-            "nmcli", "-g", "connection.type", "connection", "show", name
-        )
-        if retval != 0:
-            return None
-        return output.strip()
-
-    async def _single_bridge_is_configured(self):
-        if await self._get_connection_type(self.ETH_CONN) != "bridge":
-            return False
-        return (
-            await self._connection_exists(self.BRIDGE_LAN1_CONN)
-            and await self._connection_exists(self.BRIDGE_LAN2_CONN)
-        )
-
     async def _get_connection_ipv4_method(self, name):
         retval, output = await utils.exec_command(
             "nmcli", "-g", "ipv4.method", "connection", "show", name
@@ -201,8 +182,6 @@ class NetworkConfig():
                 )
 
     async def _delete_single_eth_connection(self):
-        await utils.shell(f"nmcli con del '{self.BRIDGE_LAN1_CONN}' || true")
-        await utils.shell(f"nmcli con del '{self.BRIDGE_LAN2_CONN}' || true")
         await utils.shell(f"nmcli con del '{self.ETH_CONN}' || true")
 
     async def _delete_dual_lan_connections(self):
@@ -482,9 +461,30 @@ class NetworkConfig():
                 )
                 return False
 
-        if not await self._add_ethernet_connection():
-            return False
-        return await self._activate_ethernet_connection()
+        await self._add_ethernet_connection()
+        await self._activate_ethernet_connection()
+        return True
+
+    async def _ensure_eth_profile_portable(self):
+        retval, output = await utils.shell(
+            f"nmcli -g connection.interface-name con show {self.ETH_CONN}"
+        )
+        if retval != 0:
+            return
+
+        pinned_iface = output.strip()
+        if pinned_iface not in NetworkType.get_available_eth_interfaces():
+            return
+
+        logger.info(
+            "Clearing pinned ethernet interface %s from %s",
+            pinned_iface,
+            self.ETH_CONN,
+        )
+        await utils.shell(
+            f"nmcli con modify {self.ETH_CONN} connection.interface-name '' connection.autoconnect yes connection.autoconnect-retries 0"
+        )
+        await utils.shell("nmcli con reload")
 
     async def repair_ethernet_activation(self):
         if os.path.exists(NETWORK_APPLY_LOCK_FILE):
@@ -541,8 +541,8 @@ class NetworkConfig():
             return
 
         self._dual_lan_policy_initialized = False
-        bridge_configured = await self._single_bridge_is_configured()
-        if not bridge_configured:
+        retval, _ = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
+        if retval != 0:
             wifi_exists = await self._connection_exists(self.WIFI_CONN)
             if saved_mode == self.NW_WIFI_ONLY or (
                 saved_mode is None and wifi_exists
@@ -553,106 +553,88 @@ class NetworkConfig():
                 return
             if saved_mode in (self.NW_SINGLE_LAN, self.NW_LAN_WIFI):
                 logger.warning(
-                    "Single-LAN bridge missing or invalid; restoring saved configuration"
+                    "Single-LAN profile missing; restoring saved configuration"
                 )
-                await self._delete_single_eth_connection()
                 await self._restore_missing_single_ethernet_profile(saved_config)
                 return
             logger.info("Ethernet profile missing; recreating default profile")
             await self.save()
             return
 
-        active_connections = await self._get_active_connections()
-        if active_connections.get(self.ETH_CONN) != self.BRIDGE_IFACE:
-            logger.info("Activating Single-LAN bridge %s", self.BRIDGE_IFACE)
-            await utils.shell(
-                f"nmcli -w 10 con up '{self.ETH_CONN}' || true"
-            )
-            active_connections = await self._get_active_connections()
-
+        await self._ensure_eth_profile_portable()
         linked_ifaces = await self._get_linked_eth_interfaces()
-        for iface, connection in (
-            (self.LAN1_IFACE, self.BRIDGE_LAN1_CONN),
-            (self.LAN2_IFACE, self.BRIDGE_LAN2_CONN),
-        ):
-            if iface not in linked_ifaces:
-                continue
-            if active_connections.get(connection) == iface:
-                continue
-            logger.info("Activating Single-LAN bridge port %s", iface)
-            await utils.shell(
-                f"nmcli -w 10 con up '{connection}' ifname '{iface}' || true"
-            )
+        active_connections = await self._get_active_connections()
+        active_iface = active_connections.get(self.ETH_CONN)
+
+        if active_iface in linked_ifaces:
+            return
+
+        if not linked_ifaces:
+            logger.info("No ethernet link detected; taking ethernet profile down")
+            await utils.shell(f"nmcli con down {self.ETH_CONN} || true")
+            return
+
+        target_iface = linked_ifaces[0]
+        logger.info(
+            "Repairing ethernet activation: active=%s linked=%s target=%s",
+            active_iface,
+            ",".join(linked_ifaces),
+            target_iface,
+        )
+        await utils.shell(f"nmcli con down {self.ETH_CONN} || true")
+        await utils.shell(
+            f"nmcli -w 10 con up {self.ETH_CONN} ifname '{target_iface}' || nmcli -w 10 con up {self.ETH_CONN} || true"
+        )
 
     async def _add_ethernet_connection(self):
-        args = [
-            "nmcli", "connection", "add", "type", "bridge",
-            "con-name", self.ETH_CONN, "ifname", self.BRIDGE_IFACE,
-            "bridge.stp", "yes", "bridge.forward-delay", "2",
-        ]
         if self.is_static():
             iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
             dns_value = self.dns1
             if self.dns2:
                 dns_value = f"{self.dns1},{self.dns2}"
-            args.extend(["ip4", str(iface_ip)])
+            args = [
+                "nmcli", "connection", "add", "type", "ethernet",
+                "con-name", self.ETH_CONN, "ifname", "*",
+                "ip4", str(iface_ip),
+            ]
             if self.gateway:
                 args.extend(["gw4", self.gateway])
             if dns_value:
                 args.extend(["ipv4.dns", dns_value])
+            args.extend([
+                "connection.autoconnect", "yes",
+                "connection.autoconnect-retries", "0",
+            ])
+            retval, output = await utils.exec_command(*args)
         else:
-            args.extend(["ipv4.method", "auto"])
-        args.extend([
-            "connection.autoconnect", "yes",
-            "connection.autoconnect-retries", "0",
-            "connection.autoconnect-slaves", "1",
-        ])
-        retval, output = await utils.exec_command(*args)
-        if retval != 0:
-            logger.warning("Can not create Single-LAN bridge: %s", output.strip())
-            return False
-
-        success = True
-        for iface, connection in (
-            (self.LAN1_IFACE, self.BRIDGE_LAN1_CONN),
-            (self.LAN2_IFACE, self.BRIDGE_LAN2_CONN),
-        ):
             retval, output = await utils.exec_command(
                 "nmcli", "connection", "add", "type", "ethernet",
-                "con-name", connection, "ifname", iface,
-                "master", self.BRIDGE_IFACE, "slave-type", "bridge",
+                "con-name", self.ETH_CONN, "ifname", "*",
+                "ipv4.method", "auto",
                 "connection.autoconnect", "yes",
                 "connection.autoconnect-retries", "0",
             )
-            if retval != 0:
-                logger.warning(
-                    "Can not add %s to Single-LAN bridge: %s",
-                    iface,
-                    output.strip(),
-                )
-                success = False
-        return success
 
     async def _activate_ethernet_connection(self):
-        retval, output = await utils.exec_command(
-            "nmcli", "-w", "10", "con", "up", self.ETH_CONN
-        )
-        success = retval == 0
-        if retval != 0:
-            logger.warning("Can not activate Single-LAN bridge: %s", output.strip())
-
-        for connection in (self.BRIDGE_LAN1_CONN, self.BRIDGE_LAN2_CONN):
+        linked_ifaces = await self._get_linked_eth_interfaces()
+        activation_ifname = ""
+        if self.eth_interface in linked_ifaces:
+            activation_ifname = self.eth_interface
+        elif linked_ifaces:
+            activation_ifname = linked_ifaces[0]
+        if activation_ifname:
             retval, output = await utils.exec_command(
-                "nmcli", "-w", "10", "con", "up", connection
+                "nmcli", "-w", "10", "con", "up", self.ETH_CONN,
+                "ifname", activation_ifname,
             )
             if retval != 0:
-                logger.info(
-                    "Single-LAN bridge port %s is waiting for link: %s",
-                    connection,
-                    output.strip(),
+                retval, output = await utils.exec_command(
+                    "nmcli", "-w", "10", "con", "up", self.ETH_CONN
                 )
-            success = success or retval == 0
-        return success
+        else:
+            retval, output = await utils.exec_command(
+                "nmcli", "-w", "10", "con", "up", self.ETH_CONN
+            )
 
     async def _add_wifi_connection(self, route_metric=None, force_dhcp=False):
         if self.ssid is None or self.ssid == "":
@@ -736,17 +718,14 @@ class NetworkConfig():
 
         retval, output = await utils.shell(f"nmcli -t con show {self.ETH_CONN}")
         if retval == 0: # Static ethernet is configured
-            method = await self._get_connection_ipv4_method(self.ETH_CONN)
-            self.type = (
-                NetworkType.ETH_DHCP
-                if method == "auto"
-                else NetworkType.ETH_STATIC
-            )
+            await self._ensure_eth_profile_portable()
+            self.type = NetworkType.ETH_STATIC
             retval, output = await utils.shell(f"nmcli -t -f GENERAL.STATE con show {self.ETH_CONN}")
             if "activated" in output:
-                if await self._get_ip_from_if(self.BRIDGE_IFACE):
-                    linked_ifaces = await self._get_linked_eth_interfaces()
-                    self.eth_interface = linked_ifaces[0] if linked_ifaces else ""
+                active_connections = await self._get_active_connections()
+                iface = active_connections.get(self.ETH_CONN)
+                if iface is not None and await self._get_ip_from_if(iface):
+                    self.eth_interface = iface  # Store which interface is being used
                     return
 
         retval, output = await utils.shell(f"nmcli -t con show {self.WIFI_CONN}")
@@ -800,11 +779,7 @@ class NetworkConfig():
         await self._activate_wifi_connection()
 
     async def set_ethernet(self):
-        logger.info(
-            "Set Single-LAN bridge across %s and %s",
-            self.LAN1_IFACE,
-            self.LAN2_IFACE,
-        )
+        logger.info(f"Set Ethernet on interface {self.eth_interface}")
         await self._clear_dual_lan_policy_routing()
         await self._delete_single_eth_connection()
         await self._delete_dual_lan_connections()
@@ -821,7 +796,15 @@ class NetworkConfig():
         await self._add_ethernet_connection()
         await self._add_wifi_connection(route_metric=600, force_dhcp=True)
 
-        await self._activate_ethernet_connection()
+        linked_ifaces = await self._get_linked_eth_interfaces()
+        if self.eth_interface in linked_ifaces:
+            await self._activate_ethernet_connection()
+        elif linked_ifaces:
+            self.eth_interface = linked_ifaces[0]
+            await self._activate_ethernet_connection()
+        else:
+            logger.info("No ethernet link detected while setting LAN + WiFi")
+
         await self._activate_wifi_connection()
 
     async def _add_dual_lan_connection(
@@ -932,7 +915,7 @@ class NetworkConfig():
             self.lan2_ip,
         )
         await self._disable_auto_wired_connections()
-        await self._delete_single_eth_connection()
+        await utils.shell(f"nmcli con del '{self.ETH_CONN}' || true")
         await utils.shell(f"nmcli con del '{self.LAN1_CONN}' || true")
         await utils.shell(f"nmcli con del '{self.LAN2_CONN}' || true")
         await self._delete_wifi_connection()
@@ -990,7 +973,9 @@ class NetworkConfig():
             logger.error("Error saving network config")
 
     async def reset_nw_config(self):
-        await self._delete_single_eth_connection()
+        retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN}")
+        if retval != 0:
+            logger.warning("Can not delete Ethernet connection (not exist?)")
         await utils.shell(f"nmcli con del '{self.LAN1_CONN}' || true")
         await utils.shell(f"nmcli con del '{self.LAN2_CONN}' || true")
         retval, output = await utils.shell(f"nmcli con del {self.WIFI_CONN}")

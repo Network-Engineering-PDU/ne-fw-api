@@ -19,17 +19,18 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(await config._get_active_eth_if(), "eth1")
 
-    async def test_single_bridge_detection_is_read_only(self):
+    async def test_portable_profile_is_not_rewritten_on_every_repair(self):
         config = NetworkConfig()
-        config._get_connection_type = AsyncMock(return_value="bridge")
-        config._connection_exists = AsyncMock(return_value=True)
 
-        self.assertTrue(await config._single_bridge_is_configured())
-        config._get_connection_type.assert_awaited_once_with(config.ETH_CONN)
-        self.assertEqual(config._connection_exists.await_args_list, [
-            call(config.BRIDGE_LAN1_CONN),
-            call(config.BRIDGE_LAN2_CONN),
-        ])
+        with patch(
+            "ttne.network_config.utils.shell",
+            new=AsyncMock(return_value=(0, "\n")),
+        ) as shell:
+            await config._ensure_eth_profile_portable()
+
+        shell.assert_awaited_once_with(
+            "nmcli -g connection.interface-name con show ble-eth-conn"
+        )
 
     async def test_dual_lan_repair_skips_active_connection(self):
         config = NetworkConfig()
@@ -245,17 +246,13 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_single_lan_repair_never_applies_dual_policy(self):
         config = NetworkConfig()
-        config._load_saved_network_config = lambda: {
-            "nw_mode": config.NW_SINGLE_LAN,
-        }
         config._is_dual_lan_configured = AsyncMock(return_value=False)
-        config._single_bridge_is_configured = AsyncMock(return_value=True)
+        config._ensure_eth_profile_portable = AsyncMock()
         config._get_linked_eth_interfaces = AsyncMock(
             return_value=[config.LAN1_IFACE]
         )
         config._get_active_connections = AsyncMock(return_value={
-            config.ETH_CONN: config.BRIDGE_IFACE,
-            config.BRIDGE_LAN1_CONN: config.LAN1_IFACE,
+            config.ETH_CONN: config.LAN1_IFACE,
         })
         config._apply_dual_lan_policy_routing = AsyncMock()
 
@@ -293,13 +290,12 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
             "nw_mode": config.NW_SINGLE_LAN,
         }
         config._is_dual_lan_configured = AsyncMock(return_value=True)
-        config._single_bridge_is_configured = AsyncMock(return_value=True)
+        config._ensure_eth_profile_portable = AsyncMock()
         config._get_linked_eth_interfaces = AsyncMock(
             return_value=[config.LAN1_IFACE]
         )
         config._get_active_connections = AsyncMock(return_value={
-            config.ETH_CONN: config.BRIDGE_IFACE,
-            config.BRIDGE_LAN1_CONN: config.LAN1_IFACE,
+            config.ETH_CONN: config.LAN1_IFACE,
         })
         config._apply_dual_lan_policy_routing = AsyncMock()
 
@@ -325,9 +321,7 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         }
         config._load_saved_network_config = lambda: saved_config
         config._is_dual_lan_configured = AsyncMock(return_value=False)
-        config._single_bridge_is_configured = AsyncMock(return_value=False)
         config._connection_exists = AsyncMock(return_value=False)
-        config._delete_single_eth_connection = AsyncMock()
         config._restore_missing_single_ethernet_profile = AsyncMock()
 
         with patch("ttne.network_config.os.path.exists", return_value=False), patch(
@@ -362,21 +356,16 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
             (False, False)
         )
 
-    async def test_single_lan_activates_each_connected_bridge_port(self):
+    async def test_single_lan_activates_on_either_connected_port(self):
         for target_iface in (NetworkConfig.LAN1_IFACE, NetworkConfig.LAN2_IFACE):
             with self.subTest(target_iface=target_iface):
                 config = NetworkConfig()
-                config._load_saved_network_config = lambda: {
-                    "nw_mode": config.NW_SINGLE_LAN,
-                }
                 config._is_dual_lan_configured = AsyncMock(return_value=False)
-                config._single_bridge_is_configured = AsyncMock(return_value=True)
+                config._ensure_eth_profile_portable = AsyncMock()
                 config._get_linked_eth_interfaces = AsyncMock(
                     return_value=[target_iface]
                 )
-                config._get_active_connections = AsyncMock(return_value={
-                    config.ETH_CONN: config.BRIDGE_IFACE,
-                })
+                config._get_active_connections = AsyncMock(return_value={})
 
                 with patch(
                     "ttne.network_config.os.path.exists",
@@ -387,59 +376,24 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
                 ) as shell:
                     await config.repair_ethernet_activation()
 
-                target_connection = (
-                    config.BRIDGE_LAN1_CONN
-                    if target_iface == config.LAN1_IFACE
-                    else config.BRIDGE_LAN2_CONN
-                )
-                shell.assert_awaited_once_with(
-                    f"nmcli -w 10 con up '{target_connection}' "
-                    f"ifname '{target_iface}' || true"
-                )
-
-    async def test_single_lan_activates_both_ports_simultaneously(self):
-        config = NetworkConfig()
-        config._load_saved_network_config = lambda: {
-            "nw_mode": config.NW_SINGLE_LAN,
-        }
-        config._single_bridge_is_configured = AsyncMock(return_value=True)
-        config._get_linked_eth_interfaces = AsyncMock(return_value=[
-            config.LAN1_IFACE,
-            config.LAN2_IFACE,
-        ])
-        config._get_active_connections = AsyncMock(return_value={
-            config.ETH_CONN: config.BRIDGE_IFACE,
-        })
-
-        with patch("ttne.network_config.os.path.exists", return_value=False), patch(
-            "ttne.network_config.utils.shell",
-            new=AsyncMock(return_value=(0, "")),
-        ) as shell:
-            await config.repair_ethernet_activation()
-
-        self.assertEqual(shell.await_args_list, [
-            call(
-                f"nmcli -w 10 con up '{config.BRIDGE_LAN1_CONN}' "
-                f"ifname '{config.LAN1_IFACE}' || true"
-            ),
-            call(
-                f"nmcli -w 10 con up '{config.BRIDGE_LAN2_CONN}' "
-                f"ifname '{config.LAN2_IFACE}' || true"
-            ),
-        ])
+                self.assertEqual(shell.await_args_list, [
+                    call(f"nmcli -t con show {config.ETH_CONN}"),
+                    call(f"nmcli con down {config.ETH_CONN} || true"),
+                    call(
+                        f"nmcli -w 10 con up {config.ETH_CONN} "
+                        f"ifname '{target_iface}' || "
+                        f"nmcli -w 10 con up {config.ETH_CONN} || true"
+                    ),
+                ])
 
     async def test_single_lan_ignores_unrelated_active_ethernet_profile(self):
         config = NetworkConfig()
-        config._load_saved_network_config = lambda: {
-            "nw_mode": config.NW_SINGLE_LAN,
-        }
         config._is_dual_lan_configured = AsyncMock(return_value=False)
-        config._single_bridge_is_configured = AsyncMock(return_value=True)
+        config._ensure_eth_profile_portable = AsyncMock()
         config._get_linked_eth_interfaces = AsyncMock(
             return_value=[config.LAN2_IFACE]
         )
         config._get_active_connections = AsyncMock(return_value={
-            config.ETH_CONN: config.BRIDGE_IFACE,
             "Wired connection 1": config.LAN2_IFACE,
         })
 
@@ -451,22 +405,20 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(
             call(
-                f"nmcli -w 10 con up '{config.BRIDGE_LAN2_CONN}' "
-                f"ifname '{config.LAN2_IFACE}' || true"
+                f"nmcli -w 10 con up {config.ETH_CONN} "
+                f"ifname '{config.LAN2_IFACE}' || "
+                f"nmcli -w 10 con up {config.ETH_CONN} || true"
             ),
             shell.await_args_list,
         )
 
-    async def test_single_lan_keeps_bridge_ready_when_both_ports_unplugged(self):
+    async def test_single_lan_deactivates_profile_when_both_ports_unplugged(self):
         config = NetworkConfig()
-        config._load_saved_network_config = lambda: {
-            "nw_mode": config.NW_SINGLE_LAN,
-        }
         config._is_dual_lan_configured = AsyncMock(return_value=False)
-        config._single_bridge_is_configured = AsyncMock(return_value=True)
+        config._ensure_eth_profile_portable = AsyncMock()
         config._get_linked_eth_interfaces = AsyncMock(return_value=[])
         config._get_active_connections = AsyncMock(return_value={
-            config.ETH_CONN: config.BRIDGE_IFACE,
+            config.ETH_CONN: config.LAN1_IFACE,
         })
 
         with patch("ttne.network_config.os.path.exists", return_value=False), patch(
@@ -475,7 +427,9 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         ) as shell:
             await config.repair_ethernet_activation()
 
-        shell.assert_not_awaited()
+        shell.assert_any_await(
+            f"nmcli con down {config.ETH_CONN} || true"
+        )
 
     async def test_single_lan_and_wifi_never_apply_dual_policy(self):
         for setter_name in ("set_ethernet", "set_wifi"):
@@ -496,7 +450,7 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
                 config._clear_dual_lan_policy_routing.assert_awaited_once_with()
                 config._apply_dual_lan_policy_routing.assert_not_awaited()
 
-    async def test_lan_wifi_keeps_wifi_and_bridge_active(self):
+    async def test_lan_wifi_keeps_wifi_and_portable_single_lan_behavior(self):
         config = NetworkConfig()
         config.eth_interface = config.LAN1_IFACE
         config._clear_dual_lan_policy_routing = AsyncMock()
@@ -505,6 +459,9 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         config._delete_wifi_connection = AsyncMock()
         config._add_ethernet_connection = AsyncMock()
         config._add_wifi_connection = AsyncMock()
+        config._get_linked_eth_interfaces = AsyncMock(
+            return_value=[config.LAN2_IFACE]
+        )
         config._activate_ethernet_connection = AsyncMock()
         config._activate_wifi_connection = AsyncMock()
         config._apply_dual_lan_policy_routing = AsyncMock()
@@ -517,7 +474,7 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
             route_metric=600,
             force_dhcp=True,
         )
-        self.assertEqual(config.eth_interface, config.LAN1_IFACE)
+        self.assertEqual(config.eth_interface, config.LAN2_IFACE)
         config._activate_ethernet_connection.assert_awaited_once_with()
         config._activate_wifi_connection.assert_awaited_once_with()
         config._apply_dual_lan_policy_routing.assert_not_awaited()
@@ -567,35 +524,9 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         ) as exec_command:
             await config._add_ethernet_connection()
 
-        self.assertEqual(len(exec_command.await_args_list), 3)
-        bridge_args = exec_command.await_args_list[0].args
-        self.assertEqual(bridge_args[:10], (
-            "nmcli", "connection", "add", "type", "bridge",
-            "con-name", config.ETH_CONN, "ifname", config.BRIDGE_IFACE,
-            "bridge.stp",
-        ))
-        self.assertIn("192.168.50.10/24", bridge_args)
-        self.assertNotIn("gw4", bridge_args)
-        self.assertNotIn("ipv4.dns", bridge_args)
-        self.assertEqual(
-            [mock_call.args[6] for mock_call in exec_command.await_args_list[1:]],
-            [config.BRIDGE_LAN1_CONN, config.BRIDGE_LAN2_CONN],
-        )
-
-    async def test_deleting_single_lan_removes_bridge_and_both_ports(self):
-        config = NetworkConfig()
-
-        with patch(
-            "ttne.network_config.utils.shell",
-            new=AsyncMock(return_value=(0, "")),
-        ) as shell:
-            await config._delete_single_eth_connection()
-
-        self.assertEqual(shell.await_args_list, [
-            call(f"nmcli con del '{config.BRIDGE_LAN1_CONN}' || true"),
-            call(f"nmcli con del '{config.BRIDGE_LAN2_CONN}' || true"),
-            call(f"nmcli con del '{config.ETH_CONN}' || true"),
-        ])
+        args = exec_command.await_args.args
+        self.assertNotIn("gw4", args)
+        self.assertNotIn("ipv4.dns", args)
 
     async def test_static_dual_profile_uses_its_gateway_and_metric(self):
         config = NetworkConfig()
@@ -629,7 +560,6 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         config = NetworkConfig()
         config.nw_mode = config.NW_DUAL_LAN
         config._disable_auto_wired_connections = AsyncMock()
-        config._delete_single_eth_connection = AsyncMock()
         config._delete_wifi_connection = AsyncMock()
         config._add_dual_lan_connection = AsyncMock(return_value=True)
         config._get_linked_eth_interfaces = AsyncMock(return_value=[])
@@ -643,7 +573,6 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
             await config.set_dual_lan()
 
         config._delete_wifi_connection.assert_awaited_once_with()
-        config._delete_single_eth_connection.assert_awaited_once_with()
 
     async def test_dual_lan_uses_independent_gateways_and_preferred_metric(self):
         config = NetworkConfig()
@@ -655,7 +584,6 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         config.lan2_ip = "10.2.0.10"
         config.lan2_gateway = "10.2.0.1"
         config._disable_auto_wired_connections = AsyncMock()
-        config._delete_single_eth_connection = AsyncMock()
         config._delete_wifi_connection = AsyncMock()
         config._add_dual_lan_connection = AsyncMock(return_value=True)
         config._get_linked_eth_interfaces = AsyncMock(return_value=[])
