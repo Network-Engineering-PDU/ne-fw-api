@@ -167,6 +167,12 @@ class SnmpDisplayConfig(BaseModel):
     def migrate_combined_version(cls, value):
         return "V2c" if value == "V1/V2c" else value
 
-    @validator("manager_1", "manager_2", "manager_3", "manager_4")
+    @validator(
+        "manager_1", "manager_2", "manager_3", "manager_4", pre=True
+    )
     def validate_trap_target(cls, value):
         return _validated_trap_target(value)
+
+    @validator("v3_user", pre=True)
+    def normalize_optional_v3_user(cls, value):
+        return None if value in (None, "") else value

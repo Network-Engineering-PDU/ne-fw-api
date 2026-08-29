@@ -203,6 +203,26 @@ class SnmpDisplaySettingsTest(unittest.IsolatedAsyncioTestCase):
             models.SnmpTrapConfig(alarm=True, manager_1_ip="").manager_1_ip
         )
 
+    def test_accepts_empty_optional_display_fields_from_older_clients(self):
+        config = models.SnmpDisplayConfig(
+            enabled=True,
+            version="V2c",
+            set_enabled=True,
+            community="public",
+            traps_enabled=False,
+            manager_1="",
+            manager_2="",
+            manager_3="",
+            manager_4="",
+            v3_user="",
+        )
+
+        self.assertIsNone(config.manager_1)
+        self.assertIsNone(config.manager_2)
+        self.assertIsNone(config.manager_3)
+        self.assertIsNone(config.manager_4)
+        self.assertIsNone(config.v3_user)
+
 
 if __name__ == "__main__":
     unittest.main()
