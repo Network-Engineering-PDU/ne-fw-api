@@ -4,7 +4,7 @@ import stat
 import tempfile
 import unittest
 
-from ttne.snmp_config import write_snmp_config
+from ttne.snmp_config import write_snmp_config, write_snmp_v3_user
 
 
 TEMPLATE = """agentAddress  udp:161
@@ -24,6 +24,9 @@ class SnmpSettingsTest(unittest.TestCase):
         self.destination = os.path.join(self.directory.name, "snmpd.conf")
         self.settings = os.path.join(self.directory.name, "settings.json")
         self.nms = os.path.join(self.directory.name, "nms")
+        self.persistent = os.path.join(
+            self.directory.name, "persistent-snmpd.conf"
+        )
         with open(self.source, "w", encoding="utf-8") as config_file:
             config_file.write(TEMPLATE)
 
@@ -45,7 +48,8 @@ class SnmpSettingsTest(unittest.TestCase):
             nms_file.write('PDU "A"\nops@example.test\nRack\\One')
 
         write_snmp_config(
-            self.source, self.destination, self.settings, self.nms
+            self.source, self.destination, self.settings, self.nms,
+            self.persistent,
         )
         with open(self.destination, "r", encoding="utf-8") as config_file:
             rendered = config_file.read()
@@ -185,7 +189,8 @@ class SnmpSettingsTest(unittest.TestCase):
             }, settings_file)
 
         write_snmp_config(
-            self.source, self.destination, self.settings, self.nms
+            self.source, self.destination, self.settings, self.nms,
+            self.persistent,
         )
         with open(self.destination, "r", encoding="utf-8") as config_file:
             rendered = config_file.read()
@@ -195,8 +200,23 @@ class SnmpSettingsTest(unittest.TestCase):
             "rwuser operator priv", rendered
         )
         self.assertIn(
+            f"includeFile {self.persistent}", rendered
+        )
+        self.assertNotIn("createUser", rendered)
+
+        with open(self.persistent, "w", encoding="utf-8") as config_file:
+            config_file.write("engineBoots 7\nusmUser old-user-data\n")
+        write_snmp_v3_user(self.settings, self.persistent)
+        with open(self.persistent, "r", encoding="utf-8") as config_file:
+            persistent = config_file.read()
+        self.assertIn(
             'createUser operator SHA "AuthPass123" AES "PrivPass123"',
-            rendered,
+            persistent,
+        )
+        self.assertIn("engineBoots 7", persistent)
+        self.assertNotIn("old-user-data", persistent)
+        self.assertEqual(
+            0o600, stat.S_IMODE(os.stat(self.persistent).st_mode)
         )
 
     def test_invalid_v3_credentials_do_not_restore_community_access(self):
@@ -226,6 +246,10 @@ class SnmpSettingsTest(unittest.TestCase):
         self.assertNotIn("createUser", rendered)
         self.assertNotIn("rouser", rendered)
         self.assertNotIn("rwuser", rendered)
+
+        write_snmp_v3_user(self.settings, self.persistent)
+        with open(self.persistent, "r", encoding="utf-8") as config_file:
+            self.assertNotIn("createUser", config_file.read())
 
 
 if __name__ == "__main__":

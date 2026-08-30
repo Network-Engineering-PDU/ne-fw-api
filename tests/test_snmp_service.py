@@ -31,13 +31,25 @@ class SnmpServiceTest(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=(0, 1, 0))), patch.object(
                 functions.os, "makedirs"), patch.object(
                 functions, "write_snmp_config") as write_config, patch.object(
+                functions, "write_snmp_v3_user") as write_v3, patch.object(
                 functions.utils, "shell",
-                AsyncMock(return_value=(0, ""))) as shell:
+                AsyncMock(side_effect=[(0, ""), (0, "")])) as shell, \
+                patch.object(functions.utils, "exec_command",
+                             AsyncMock(return_value=(0, ""))) as execute:
             restored = await functions.restore_snmp()
 
         self.assertTrue(restored)
         write_config.assert_called_once_with()
-        shell.assert_awaited_once_with("/etc/init.d/snmpd start")
+        write_v3.assert_called_once_with()
+        self.assertEqual([
+            unittest.mock.call("/usr/bin/nesnmpd_helper --warm-cache"),
+            unittest.mock.call("/etc/init.d/snmpd start"),
+        ], shell.await_args_list)
+        execute.assert_awaited_once_with(
+            "/usr/bin/snmpget", "-v2c", "-c", "_nee_internal_warmup_",
+            "-t", "5", "-r", "2", "127.0.0.1",
+            "1.3.6.1.4.1.2000.1.1.1.0",
+        )
 
     async def test_restore_leaves_disabled_daemon_stopped(self):
         with patch.object(
@@ -57,8 +69,9 @@ class SnmpServiceTest(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=(0, 1, 0))), patch.object(
                 functions.os, "makedirs"), patch.object(
                 functions, "write_snmp_config"), patch.object(
+                functions, "write_snmp_v3_user"), patch.object(
                 functions.utils, "shell",
-                AsyncMock(return_value=(1, "failed"))):
+                AsyncMock(side_effect=[(0, ""), (1, "failed")])):
             restored = await functions.restore_snmp()
 
         self.assertFalse(restored)
@@ -71,20 +84,28 @@ class SnmpServiceTest(unittest.IsolatedAsyncioTestCase):
                 AsyncMock()) as write_services, patch.object(
                 functions.os, "makedirs"), patch.object(
                 functions, "write_snmp_config") as write_config, patch.object(
+                functions, "write_snmp_v3_user") as write_v3, patch.object(
                 functions.utils, "shell",
-                AsyncMock(side_effect=[(0, ""), (0, "")])) as shell:
+                AsyncMock(side_effect=[(0, ""), (0, ""), (0, "")])) as shell, \
+                patch.object(functions.utils, "exec_command",
+                             AsyncMock(return_value=(0, ""))) as execute:
             applied = await functions.apply_snmp_configuration(True)
 
         self.assertTrue(applied)
         write_config.assert_called_once_with()
+        write_v3.assert_called_once_with()
         self.assertEqual(
             [
                 unittest.mock.call("/etc/init.d/snmpd stop"),
+                unittest.mock.call(
+                    "/usr/bin/nesnmpd_helper --warm-cache"
+                ),
                 unittest.mock.call("/etc/init.d/snmpd start"),
             ],
             shell.await_args_list,
         )
         write_services.assert_awaited_once_with(1, 1, 0)
+        execute.assert_awaited_once()
 
 
 if __name__ == "__main__":

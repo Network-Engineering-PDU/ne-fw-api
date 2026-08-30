@@ -17,7 +17,9 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from ttne import utils
 from ttne.app.network import functions as nw_functions
 from ttne.config import Config
-from ttne.snmp_config import write_snmp_config
+from ttne.snmp_config import (
+    LOCAL_WARMUP_COMMUNITY, write_snmp_config, write_snmp_v3_user,
+)
 from ttne import ntp_config
 from ttne.sn_pn_generator import *
 from .. import gateway_helper
@@ -513,14 +515,31 @@ async def _launch_snmp():
     try:
         os.makedirs("/home/root/snmp", exist_ok=True)
         write_snmp_config()
+        write_snmp_v3_user()
     except OSError:
         logger.exception("Can not prepare SNMP configuration")
         return False
+    retval, output = await utils.shell(
+        "/usr/bin/nesnmpd_helper --warm-cache"
+    )
+    if retval != 0:
+        logger.warning("Could not pre-warm SNMP data cache: %s", output)
     retval, _ = await utils.shell("/etc/init.d/snmpd start")
     if retval != 0:
         logger.warning("Can not start SNMP")
         return False
+    await _warm_snmp_agent()
     return True
+
+
+async def _warm_snmp_agent():
+    retval, output = await utils.exec_command(
+        "/usr/bin/snmpget", "-v2c", "-c", LOCAL_WARMUP_COMMUNITY,
+        "-t", "5", "-r", "2", "127.0.0.1",
+        "1.3.6.1.4.1.2000.1.1.1.0",
+    )
+    if retval != 0:
+        logger.warning("Could not pre-start SNMP helper: %s", output)
 
 
 async def start_snmp():
@@ -556,13 +575,20 @@ async def apply_snmp_configuration(enabled):
     try:
         os.makedirs("/home/root/snmp", exist_ok=True)
         write_snmp_config()
+        write_snmp_v3_user()
     except OSError:
         logger.exception("Failed to render SNMP configuration")
         return False
+    retval, output = await utils.shell(
+        "/usr/bin/nesnmpd_helper --warm-cache"
+    )
+    if retval != 0:
+        logger.warning("Could not pre-warm SNMP data cache: %s", output)
     if enabled:
         retval, _ = await utils.shell("/etc/init.d/snmpd start")
         if retval != 0:
             return False
+        await _warm_snmp_agent()
     await nw_functions.write_services(ssh, 1 if enabled else 0, modbus)
     return True
 
