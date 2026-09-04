@@ -70,11 +70,34 @@ def _ipv4_or_empty(value):
         return ""
 
 
-async def _current_ip(nw_config, iface):
+async def _current_ip(_nw_config, iface):
     if not iface:
         return ""
-    ip, _mask, _gateway = await nw_config._read_ip_from_if(iface)
-    return _ipv4_or_empty(ip)
+    retval, output = await utils.exec_command(
+        "ip", "-4", "-o", "address", "show", "dev", iface, "scope", "global"
+    )
+    if retval != 0:
+        return ""
+    match = re.search(r"\binet\s+([^/\s]+)/", output)
+    return _ipv4_or_empty(match.group(1)) if match else ""
+
+
+async def _current_eth_ip(nw_config, preferred_iface):
+    interfaces = (NetworkConfig.LAN1_IFACE, NetworkConfig.LAN2_IFACE)
+    ordered = (
+        (preferred_iface,) + tuple(
+            iface for iface in interfaces if iface != preferred_iface
+        )
+        if preferred_iface in interfaces
+        else interfaces
+    )
+    addresses = await asyncio.gather(*(
+        _current_ip(nw_config, iface) for iface in ordered
+    ))
+    for iface, address in zip(ordered, addresses):
+        if address:
+            return address, iface
+    return "", preferred_iface if preferred_iface in interfaces else interfaces[0]
 
 
 def _normalize_lan2_ip(value):
@@ -186,13 +209,9 @@ def validate_network_config(config: models.BaseNetworkConfig):
                     )
 
 async def get_iface_mac(iface: str) -> str:
-    retval, output = await utils.shell(f"ip address show dev {iface}")
-    if retval != 0 or output is None:
-        return ""
-    match = re.search(r"link/ether ([\d\w:]+)", output)
-    if not match:
-        return ""
-    return match.group(1)
+    mac = (await utils.read_file(f"/sys/class/net/{iface}/address")).strip()
+    valid_mac = re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac)
+    return mac.upper() if valid_mac else ""
 
 
 async def get_network_info() -> models.NetworkInfo:
@@ -202,22 +221,47 @@ async def get_network_info() -> models.NetworkInfo:
 
 async def get_network_config() -> models.MacNetworkConfig:
     logging.info("Getting network config...")
-    nw_config = NetworkConfig()
-    await nw_config.get_current_ip()
-    await nw_config.get_wifi_ssid()
-    await nw_config.get_static()
     ui_config = _load_network_ui_config()
-    detected_eth_iface = await nw_config._get_active_eth_if()
-    eth_iface = _coalesce(
-        ui_config.get("eth_interface"),
-        nw_config.eth_interface,
-        detected_eth_iface,
-        "eth0",
+    nw_config = NetworkConfig()
+    saved_mode = _saved_int(ui_config, "nw_mode", -1)
+    has_saved_config = (
+        saved_mode in (
+            NetworkConfig.NW_SINGLE_LAN,
+            NetworkConfig.NW_WIFI_ONLY,
+            NetworkConfig.NW_DUAL_LAN,
+            NetworkConfig.NW_LAN_WIFI,
+        )
+        and "type" in ui_config
+        and "dhcp" in ui_config
     )
-    nw_config.eth_interface = eth_iface  # Store the detected interface
 
-    nw_mode = _saved_int(ui_config, "nw_mode", nw_config.nw_mode)
-    network_type = _saved_int(ui_config, "type", nw_config.type)
+    if has_saved_config:
+        # The saved UI configuration is authoritative. Avoid the full
+        # NetworkManager discovery path here: it repeats several nmcli calls
+        # and can exceed the display client's three-second HTTP timeout.
+        nw_mode = saved_mode
+        network_type = _saved_int(ui_config, "type", nw_config.type)
+        detected_eth_iface = ui_config.get("eth_interface")
+    else:
+        # Compatibility path for devices that have not saved the expanded
+        # network configuration yet.
+        await nw_config.get_current_ip()
+        await nw_config.get_wifi_ssid()
+        await nw_config.get_static()
+        detected_eth_iface = await nw_config._get_active_eth_if()
+        nw_mode = _saved_int(ui_config, "nw_mode", nw_config.nw_mode)
+        network_type = _saved_int(ui_config, "type", nw_config.type)
+
+    eth_iface = (
+        detected_eth_iface
+        if detected_eth_iface in (
+            NetworkConfig.LAN1_IFACE,
+            NetworkConfig.LAN2_IFACE,
+        )
+        else NetworkConfig.LAN1_IFACE
+    )
+    nw_config.eth_interface = eth_iface
+
     dhcp = bool(ui_config.get(
         "dhcp",
         network_type in (NetworkType.ETH_DHCP, NetworkType.WIFI_DHCP),
@@ -248,12 +292,16 @@ async def get_network_config() -> models.MacNetworkConfig:
 
     if dhcp:
         if nw_mode == NetworkConfig.NW_DUAL_LAN:
+            current_lan1_ip, current_lan2_ip = await asyncio.gather(
+                _current_ip(nw_config, NetworkConfig.LAN1_IFACE),
+                _current_ip(nw_config, NetworkConfig.LAN2_IFACE),
+            )
             lan1_ip = _coalesce(
-                await _current_ip(nw_config, NetworkConfig.LAN1_IFACE),
+                current_lan1_ip,
                 configured_lan1_ip,
             )
             lan2_ip = _coalesce(
-                await _current_ip(nw_config, NetworkConfig.LAN2_IFACE),
+                current_lan2_ip,
                 configured_lan2_ip,
             )
         elif nw_mode == NetworkConfig.NW_WIFI_ONLY:
@@ -261,19 +309,34 @@ async def get_network_config() -> models.MacNetworkConfig:
                 await _current_ip(nw_config, "wlan0"),
                 configured_wifi_ip,
             )
+        elif nw_mode == NetworkConfig.NW_LAN_WIFI:
+            (current_eth_ip, eth_iface), current_wifi_ip = await asyncio.gather(
+                _current_eth_ip(nw_config, detected_eth_iface),
+                _current_ip(nw_config, "wlan0"),
+            )
+            lan1_ip = _coalesce(current_eth_ip, configured_lan1_ip)
+            wifi_ip = _coalesce(
+                current_wifi_ip,
+                _ipv4_or_empty(ui_config.get("wifi_ip")),
+                _ipv4_or_empty(nw_config.wifi_ip),
+                DEFAULT_LAN2_IP,
+            )
         else:
+            current_eth_ip, eth_iface = await _current_eth_ip(
+                nw_config, detected_eth_iface
+            )
             lan1_ip = _coalesce(
-                await _current_ip(nw_config, detected_eth_iface),
+                current_eth_ip,
                 configured_lan1_ip,
             )
 
-    if nw_mode == NetworkConfig.NW_LAN_WIFI:
+    if nw_mode == NetworkConfig.NW_LAN_WIFI and not dhcp:
         wifi_ip = _coalesce(
-            await _current_ip(nw_config, "wlan0") if dhcp else "",
             _ipv4_or_empty(ui_config.get("wifi_ip")),
             _ipv4_or_empty(nw_config.wifi_ip),
             DEFAULT_LAN2_IP,
         )
+    nw_config.eth_interface = eth_iface
     legacy_gateway = _coalesce(
         ui_config.get("gateway_ip"), nw_config.gateway, DEFAULT_GATEWAY
     )
@@ -300,12 +363,16 @@ async def get_network_config() -> models.MacNetworkConfig:
         password="",
         eth_interface=_coalesce(ui_config.get("eth_interface"), nw_config.eth_interface)
     )
+    ethernet_mac, wifi_mac = await asyncio.gather(
+        get_iface_mac(eth_iface),
+        get_iface_mac("wlan0"),
+    )
     network_config = models.MacNetworkConfig(
         type=network_type,
         dhcp=dhcp,
         params=config_params,
-        ethernet_mac=await nw_config.get_mac(eth_iface),
-        wifi_mac=await nw_config.get_mac("wlan0"),
+        ethernet_mac=ethernet_mac,
+        wifi_mac=wifi_mac,
         eth_interface=config_params.eth_interface,
         nw_mode=nw_mode,
         lan1_ip=lan1_ip,
