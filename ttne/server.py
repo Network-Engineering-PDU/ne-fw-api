@@ -107,7 +107,7 @@ class Server:
 
     async def sn_pn(self):
         sn, pn = read_snpn()
-        if sn == "N/A" or pn == "N/A":
+        if sn == "N/A" or not is_valid_pn(pn):
             mac = "000000000000"
             ret, output = await utils.shell("ip address")
             if ret == 0:
@@ -120,7 +120,8 @@ class Server:
             sys_type = pmb.get_switches()["sys_type"]
             curr_type = pmb.get_switches()["curr_type"]
             branch = pmb.get_switches()["branch"]
-            pn = pn_gen(sys_type, curr_type, branch)
+            outputs = len(PDU.get_om())
+            pn = pn_gen(sys_type, curr_type, branch, outputs)
             write_snpn(sn, pn)
 
     async def start_om(self):

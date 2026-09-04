@@ -39,6 +39,23 @@ class RespondingUart(SilentUart):
 
 class PmbStartupTest(unittest.IsolatedAsyncioTestCase):
 
+    def test_switches_follow_the_pmb_hardware_encoding(self):
+        pmb = object.__new__(Pmb)
+        pmb.uart = SilentUart()
+        pmb._log_switches = MagicMock()
+
+        for raw, expected in (
+            (0b0000, (0, 0, 0)),  # main, mono, Hall
+            (0b0100, (0, 2, 0)),  # main, three-phase, Hall
+            (0b1111, (1, 3, 1)),  # main+aux, three-phase+N, transformer
+        ):
+            pmb.get_uart_resp = MagicMock(return_value=("K", str(raw)))
+            pmb._get_switches()
+            self.assertEqual(
+                (pmb.branch, pmb.sys_type, pmb.curr_type),
+                expected,
+            )
+
     async def test_bootloader_acknowledgement_still_succeeds(self):
         uart = RespondingUart([b":", b"K"])
         bootloader_uart = BLUart(uart)
