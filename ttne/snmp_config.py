@@ -210,7 +210,7 @@ def write_snmp_config(
         pass
 
     community_access = (
-        "view neSnmpPdu included .1.3.6.1.4.1.2000.1\n"
+        "view neSnmpPdu included .1.3.6.1.4.1.66547.1\n"
         f"com2sec neSnmpWarm 127.0.0.1 {LOCAL_WARMUP_COMMUNITY}\n"
         "group neSnmpWarmGroup v2c neSnmpWarm\n"
         "access neSnmpWarmGroup \"\" v2c noauth exact "

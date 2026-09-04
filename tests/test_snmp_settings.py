@@ -12,8 +12,8 @@ override .1.3.6.1.2.1.1.4.0 octet_str ""
 override .1.3.6.1.2.1.1.5.0 octet_str "NET-POWER"
 override .1.3.6.1.2.1.1.6.0 octet_str ""
 rocommunity public
-rwcommunity private default .1.3.6.1.4.1.2000.1
-pass_persist .1.3.6.1.4.1.2000.1 /usr/bin/nesnmpd_helper
+rwcommunity private default .1.3.6.1.4.1.66547.1
+pass_persist .1.3.6.1.4.1.66547.1 /usr/bin/nesnmpd_helper
 """
 
 
@@ -57,6 +57,9 @@ class SnmpSettingsTest(unittest.TestCase):
         self.assertIn("com2sec neSnmpRead default monitor", rendered)
         self.assertIn("group neSnmpReadGroup v2c neSnmpRead", rendered)
         self.assertIn("com2sec neSnmpWrite default control", rendered)
+        self.assertIn(
+            "view neSnmpPdu included .1.3.6.1.4.1.66547.1", rendered
+        )
         self.assertIn('octet_str "PDU \\"A\\""', rendered)
         self.assertIn('octet_str "Rack\\\\One"', rendered)
         self.assertEqual(

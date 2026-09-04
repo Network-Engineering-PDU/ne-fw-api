@@ -174,8 +174,7 @@ async def put_license(data: models.License):
 
 @router.get("/license")
 async def get_license() -> models.License:
-    type_id = await functions.read_license()
-    return models.License(type_id=type_id)
+    return models.License(**(await functions.read_license_info()))
 
 @router.post("/start-ssh")
 async def post_start_ssh():

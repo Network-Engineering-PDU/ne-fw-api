@@ -49,6 +49,9 @@ class StopScanRsp(BaseModel):
 
 class License(BaseModel):
     type_id: str = "A1"
+    wifi_licensed: bool = False
+    outlet_switch_licensed: bool = False
+    outlet_metering_licensed: bool = False
 
 
 class Modbus(BaseModel):

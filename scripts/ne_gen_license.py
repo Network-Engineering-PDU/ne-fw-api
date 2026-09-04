@@ -1,4 +1,4 @@
-# python3 ne_gen_license.py --sn aaaabbbbcccc --date 13/05/2030 --type "B1" -o ttfile.bin
+# python3 ne_gen_license.py --sn aaaabbbbcccc --date 13/05/2030 --type "B1" --wifi -o ttfile.bin
 # NOTA: libarchive instalado así: https://stackoverflow.com/questions/29225812/libarchive-public-error-even-after-installing-libarchive-in-python
 
 import io
@@ -6,7 +6,6 @@ import tarfile
 import argparse
 from datetime import datetime
 import gzip
-import libarchive
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
@@ -55,6 +54,8 @@ parser.add_argument('--output', '-o', default='ttfile.bin',
                     help='Output path. Name must be ttfile.bin')
 parser.add_argument('--sn', '-s', required=True,
                     help='Serial number of the target device')
+parser.add_argument('--wifi', action='store_true',
+                    help='License Wi-Fi for the whole PDU')
 
 args = parser.parse_args()
 
@@ -70,7 +71,7 @@ epoch_time = int((args.date - datetime(1970, 1, 1)).total_seconds())
 #data.tar.gz
 #EOF
 
-license_text = f"{args.sn},{epoch_time},{args.type}"
+license_text = f"{args.sn},{epoch_time},{args.type},{1 if args.wifi else 0}"
 
 key = serialization.load_pem_private_key(PRIVATE_KEY.encode(), password=None, backend=default_backend())
 
@@ -94,7 +95,11 @@ if args.output != "ttfile.bin":
     with open(args.output, 'w') as f:
         f.write(license_file)
 
-    print(f"License generated in {args.output}. Type: {args.type}. Date: {args.date}. SN: {args.sn}")
+    print(
+        f"License generated in {args.output}. Type: {args.type}. "
+        f"Wi-Fi: {'enabled' if args.wifi else 'disabled'}. "
+        f"Date: {args.date}. SN: {args.sn}"
+    )
     exit(0)
 
 script = "#!/bin/bash\n" \
@@ -120,6 +125,8 @@ sign = key.sign(
 )
 
 signFile = io.BytesIO(sign)
+
+import libarchive
 
 with libarchive.Archive(args.output, 'w', "cpio") as a:
     #a.write(libarchive.Entry("data.tar.gz"), tar_stream.getvalue())

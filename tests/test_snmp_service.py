@@ -48,7 +48,7 @@ class SnmpServiceTest(unittest.IsolatedAsyncioTestCase):
         execute.assert_awaited_once_with(
             "/usr/bin/snmpget", "-v2c", "-c", "_nee_internal_warmup_",
             "-t", "5", "-r", "2", "127.0.0.1",
-            "1.3.6.1.4.1.2000.1.1.1.0",
+            "1.3.6.1.4.1.66547.1.1.1.0",
         )
 
     async def test_restore_leaves_disabled_daemon_stopped(self):

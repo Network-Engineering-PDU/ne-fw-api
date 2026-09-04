@@ -7,14 +7,18 @@ import logging
 import fnmatch
 import pickle
 import base64
+import binascii
+import io
 import json
 import shlex
 import threading
 from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from ttne import utils
+from ttne import license as pdu_license
 from ttne.app.network import functions as nw_functions
 from ttne.config import Config
 from ttne.snmp_config import (
@@ -447,47 +451,78 @@ async def write_license(type_id, expiration_date):
     if retval != 0:
         logger.error("Can not restart TycheTools damemon")
 
-async def read_license() -> str:
+
+class _PrimitiveLicenseUnpickler(pickle.Unpickler):
+    """Decode the legacy container without permitting object construction."""
+
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError(
+            f"Global object {module}.{name} is forbidden in a license"
+        )
+
+
+def _decode_license_container(license_line):
+    encoded = base64.b64decode(license_line.encode(), validate=True)
+    return _PrimitiveLicenseUnpickler(io.BytesIO(encoded)).load()
+
+
+async def read_license_info():
     #TODO: this should be done at the beginning, thus function should return a global variable
     #TODO: if the license changes, a reboot must be done
     logger.info("Reading license")
+    default = pdu_license.default_license_info()
     if not os.path.isfile(LICENSE_FILE):
-        return "A1"
+        return default
 
-    with open(LICENSE_FILE, 'r+') as f:
-        license_line = f.readline()
-
-    license_data = pickle.loads(base64.b64decode(license_line.encode()))
-    license_text = license_data["license"]
-    license_sign = license_data["signature"]
-
-    with open("/usr/share/usb_autorun/public.pem", "rb") as key_file:
-        public_key = serialization.load_pem_public_key(
-                key_file.read(),
-                backend=default_backend()
-        )
     try:
+        with open(LICENSE_FILE, 'r') as license_file:
+            license_line = license_file.readline().strip()
+        license_data = _decode_license_container(license_line)
+        if not isinstance(license_data, dict):
+            raise ValueError("License container is not a mapping")
+        license_text = license_data["license"]
+        license_sign = license_data["signature"]
+        if not isinstance(license_sign, bytes):
+            raise ValueError("License signature is not binary")
+
+        with open("/usr/share/usb_autorun/public.pem", "rb") as key_file:
+            public_key = serialization.load_pem_public_key(
+                    key_file.read(),
+                    backend=default_backend()
+            )
         public_key.verify(license_sign, license_text.encode(),
                 padding.PKCS1v15(), hashes.SHA256()
         )
-    except:
-        return "A1"
+        parsed = pdu_license.parse_license_text(license_text)
+        sn, epoch_exp, license_type, wifi_licensed = parsed
+    except (OSError, ValueError, TypeError, KeyError, EOFError,
+            binascii.Error, pickle.PickleError):
+        logger.warning("License file is invalid", exc_info=True)
+        return default
+    except InvalidSignature:
+        logger.warning("License signature verification failed", exc_info=True)
+        return default
 
-    line_split = license_text.split(',', 3)
-    sn = line_split[0]
-    license_type = line_split[2]
-    epoch_exp = int(line_split[1])
     epoch_now = int(time.time())
     logger.info(f"License expiration time: {epoch_exp} (current epoch: {epoch_now})")
-    logger.info(f"License type: {license_type}, SN: {sn}")
+    logger.info(
+        "License type: %s, Wi-Fi: %s, SN: %s",
+        license_type, wifi_licensed, sn,
+    )
     if epoch_exp < epoch_now:
         logger.warning("License has expired")
-        return "A1"
+        return default
     cm_sn, _ = read_snpn()
     if cm_sn != sn:
         logger.warning("License not valid for this CM, invalid serial number")
-        return "A1"
-    return license_type
+        return default
+
+    return pdu_license.license_info(license_type, wifi_licensed)
+
+
+async def read_license() -> str:
+    """Return the legacy outlet licence type for existing callers."""
+    return (await read_license_info())["type_id"]
 
 async def start_ssh():
     logger.info("Starting SSH...")
@@ -536,7 +571,7 @@ async def _warm_snmp_agent():
     retval, output = await utils.exec_command(
         "/usr/bin/snmpget", "-v2c", "-c", LOCAL_WARMUP_COMMUNITY,
         "-t", "5", "-r", "2", "127.0.0.1",
-        "1.3.6.1.4.1.2000.1.1.1.0",
+        "1.3.6.1.4.1.66547.1.1.1.0",
     )
     if retval != 0:
         logger.warning("Could not pre-start SNMP helper: %s", output)
