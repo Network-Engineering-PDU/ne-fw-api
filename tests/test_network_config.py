@@ -479,6 +479,50 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         config._activate_wifi_connection.assert_awaited_once_with()
         config._apply_dual_lan_policy_routing.assert_not_awaited()
 
+    async def test_wifi_profile_creation_reports_nmcli_failure(self):
+        config = NetworkConfig()
+        config.type = NetworkType.WIFI_DHCP
+        config.ssid = "PDU-WiFi"
+        config.psk = "correct-password"
+
+        with patch(
+            "ttne.network_config.utils.exec_command",
+            new=AsyncMock(return_value=(10, "invalid password")),
+        ):
+            self.assertFalse(await config._add_wifi_connection())
+
+    async def test_wifi_activation_reports_nmcli_failure(self):
+        config = NetworkConfig()
+        config.ssid = "PDU-WiFi"
+
+        with patch(
+            "ttne.network_config.utils.exec_command",
+            new=AsyncMock(return_value=(10, "activation failed")),
+        ):
+            self.assertFalse(await config._activate_wifi_connection())
+
+    async def test_saved_wifi_password_is_reused_only_for_same_ssid(self):
+        config = NetworkConfig()
+
+        with patch(
+            "ttne.network_config.utils.exec_command",
+            new=AsyncMock(side_effect=[
+                (0, "PDU-WiFi\n"),
+                (0, "correct-password\n"),
+            ]),
+        ):
+            self.assertEqual(
+                await config.get_saved_wifi_psk("PDU-WiFi"),
+                "correct-password",
+            )
+
+        with patch(
+            "ttne.network_config.utils.exec_command",
+            new=AsyncMock(return_value=(0, "Other-WiFi\n")),
+        ) as exec_command:
+            self.assertEqual(await config.get_saved_wifi_psk("PDU-WiFi"), "")
+            exec_command.assert_awaited_once()
+
     async def test_incomplete_dual_lan_profile_is_restored(self):
         config = NetworkConfig()
         config._get_dual_lan_profile_state = AsyncMock(side_effect=[

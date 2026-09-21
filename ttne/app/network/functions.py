@@ -215,9 +215,15 @@ async def get_iface_mac(iface: str) -> str:
 
 
 async def get_network_info() -> models.NetworkInfo:
-    # TODO: ping
-    network_info = models.NetworkInfo(connected=True)
-    return network_info
+    ui_config = _load_network_ui_config()
+    nw_mode = _saved_int(ui_config, "nw_mode", NetworkConfig.NW_SINGLE_LAN)
+    if nw_mode in (NetworkConfig.NW_WIFI_ONLY, NetworkConfig.NW_LAN_WIFI):
+        nw_config = NetworkConfig()
+        active_connections = await nw_config._get_active_connections()
+        return models.NetworkInfo(
+            connected=active_connections.get(NetworkConfig.WIFI_CONN) == "wlan0"
+        )
+    return models.NetworkInfo(connected=True)
 
 async def get_network_config() -> models.MacNetworkConfig:
     logging.info("Getting network config...")
@@ -451,6 +457,14 @@ async def _set_network_config_locked(config: models.BaseNetworkConfig):
         nw_config.nw_mode = _to_int(getattr(config, 'nw_mode', -1), -1)
         nw_config.ssid = config.params.ssid or ""
         nw_config.psk = config.params.password or ""
+        if (
+            nw_config.nw_mode in (
+                NetworkConfig.NW_WIFI_ONLY,
+                NetworkConfig.NW_LAN_WIFI,
+            )
+            and not nw_config.psk
+        ):
+            nw_config.psk = await nw_config.get_saved_wifi_psk(nw_config.ssid)
         linked_ifaces = await nw_config._get_linked_eth_interfaces()
         detected = await nw_config._get_active_eth_if()
         requested_iface = getattr(config, 'eth_interface', None)
@@ -510,7 +524,11 @@ async def _set_network_config_locked(config: models.BaseNetworkConfig):
         logger.info(nw_config.dns2)
         logger.info(f"Using ethernet interface: {nw_config.eth_interface}")
 
-        await nw_config.save()
+        if not await nw_config.save():
+            logger.error(
+                "Network configuration could not activate mode %s",
+                nw_config.nw_mode,
+            )
     finally:
         try:
             os.remove(NETWORK_APPLY_LOCK_FILE)

@@ -639,7 +639,7 @@ class NetworkConfig():
     async def _add_wifi_connection(self, route_metric=None, force_dhcp=False):
         if self.ssid is None or self.ssid == "":
             logger.warning("WiFi SSID is empty; skipping WiFi profile creation")
-            return
+            return False
 
         route_metric_args = []
         if route_metric is not None:
@@ -668,9 +668,9 @@ class NetworkConfig():
                 "connection.autoconnect", "yes",
             ])
             args.extend(route_metric_args)
-            await utils.exec_command(*args)
+            retval, output = await utils.exec_command(*args)
         else:
-            await utils.exec_command(
+            retval, output = await utils.exec_command(
                 "nmcli", "connection", "add", "type", "wifi",
                 "ifname", "*", "con-name", self.WIFI_CONN,
                 "ssid", self.ssid,
@@ -679,13 +679,38 @@ class NetworkConfig():
                 "connection.autoconnect", "yes",
                 *route_metric_args,
             )
+        if retval != 0:
+            logger.error("Can not create WiFi profile: %s", output.strip())
+            return False
+        return True
 
     async def _activate_wifi_connection(self):
         if self.ssid is None or self.ssid == "":
-            return
+            logger.warning("WiFi SSID is empty; can not activate WiFi")
+            return False
         retval, output = await utils.exec_command(
             "nmcli", "-w", "10", "con", "up", self.WIFI_CONN
         )
+        if retval != 0:
+            logger.error("Can not activate WiFi profile: %s", output.strip())
+            return False
+        return True
+
+    async def get_saved_wifi_psk(self, ssid):
+        if not ssid:
+            return ""
+        retval, output = await utils.exec_command(
+            "nmcli", "-g", "802-11-wireless.ssid",
+            "connection", "show", self.WIFI_CONN,
+        )
+        if retval != 0 or output.strip() != ssid:
+            return ""
+        retval, output = await utils.exec_command(
+            "nmcli", "--show-secrets", "-g",
+            "802-11-wireless-security.psk",
+            "connection", "show", self.WIFI_CONN,
+        )
+        return output.strip() if retval == 0 else ""
 
     async def get_current_ip(self):
         if await self._is_dual_lan_configured():
@@ -775,8 +800,9 @@ class NetworkConfig():
         await self._delete_single_eth_connection()
         await self._delete_dual_lan_connections()
         await self._delete_wifi_connection()
-        await self._add_wifi_connection()
-        await self._activate_wifi_connection()
+        if not await self._add_wifi_connection():
+            return False
+        return await self._activate_wifi_connection()
 
     async def set_ethernet(self):
         logger.info(f"Set Ethernet on interface {self.eth_interface}")
@@ -794,7 +820,8 @@ class NetworkConfig():
         await self._delete_dual_lan_connections()
         await self._delete_wifi_connection()
         await self._add_ethernet_connection()
-        await self._add_wifi_connection(route_metric=600, force_dhcp=True)
+        if not await self._add_wifi_connection(route_metric=600, force_dhcp=True):
+            return False
 
         linked_ifaces = await self._get_linked_eth_interfaces()
         if self.eth_interface in linked_ifaces:
@@ -805,7 +832,7 @@ class NetworkConfig():
         else:
             logger.info("No ethernet link detected while setting LAN + WiFi")
 
-        await self._activate_wifi_connection()
+        return await self._activate_wifi_connection()
 
     async def _add_dual_lan_connection(
         self,
@@ -962,15 +989,18 @@ class NetworkConfig():
             nw_mode = self.nw_mode
 
         if nw_mode == self.NW_LAN_WIFI:
-            await self.set_lan_wifi()
+            return await self.set_lan_wifi()
         elif self.is_ethernet() and nw_mode == self.NW_DUAL_LAN:
             await self.set_dual_lan()
+            return True
         elif self.is_ethernet():
             await self.set_ethernet()
+            return True
         elif self.is_wifi():
-            await self.set_wifi()
+            return await self.set_wifi()
         else:
             logger.error("Error saving network config")
+            return False
 
     async def reset_nw_config(self):
         retval, output = await utils.shell(f"nmcli con del {self.ETH_CONN}")
