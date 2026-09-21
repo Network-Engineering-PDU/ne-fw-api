@@ -45,6 +45,10 @@ class NetworkConfig():
         self.lan2_ip = None
         self.lan2_gateway = None
         self.wifi_ip = None
+        self.wifi_mask = None
+        self.wifi_gateway = None
+        self.wifi_dns1 = None
+        self.wifi_dns2 = None
         self._dual_lan_policy_initialized = False
         self.reset()
     
@@ -63,7 +67,11 @@ class NetworkConfig():
         self.lan1_gateway = "192.168.1.1"
         self.lan2_ip = "192.168.1.200"
         self.lan2_gateway = ""
-        self.wifi_ip = ""
+        self.wifi_ip = "192.168.1.150"
+        self.wifi_mask = "255.255.255.0"
+        self.wifi_gateway = "192.168.1.1"
+        self.wifi_dns1 = "8.8.8.8"
+        self.wifi_dns2 = ""
 
     def is_static(self):
         return NetworkType.is_static(self.type)
@@ -649,17 +657,23 @@ class NetworkConfig():
             ]
 
         if self.is_static() and not force_dhcp:
-            iface_ip = ipaddress.IPv4Interface(f"{self.ip}/{self.mask}")
-            dns_value = self.dns1
-            if self.dns2:
-                dns_value = f"{self.dns1},{self.dns2}"
+            combined_mode = self.nw_mode == self.NW_LAN_WIFI
+            ip = self.wifi_ip if combined_mode else self.ip
+            mask = self.wifi_mask if combined_mode else self.mask
+            gateway = self.wifi_gateway if combined_mode else self.gateway
+            dns1 = self.wifi_dns1 if combined_mode else self.dns1
+            dns2 = self.wifi_dns2 if combined_mode else self.dns2
+            iface_ip = ipaddress.IPv4Interface(f"{ip}/{mask}")
+            dns_value = dns1
+            if dns2:
+                dns_value = f"{dns1},{dns2}"
             args = [
                 "nmcli", "connection", "add", "type", "wifi",
                 "ifname", "*", "con-name", self.WIFI_CONN,
                 "ssid", self.ssid, "ip4", str(iface_ip),
             ]
-            if self.gateway:
-                args.extend(["gw4", self.gateway])
+            if gateway:
+                args.extend(["gw4", gateway])
             if dns_value:
                 args.extend(["ipv4.dns", dns_value])
             args.extend([
@@ -820,7 +834,7 @@ class NetworkConfig():
         await self._delete_dual_lan_connections()
         await self._delete_wifi_connection()
         await self._add_ethernet_connection()
-        if not await self._add_wifi_connection(route_metric=600, force_dhcp=True):
+        if not await self._add_wifi_connection(route_metric=600):
             return False
 
         linked_ifaces = await self._get_linked_eth_interfaces()

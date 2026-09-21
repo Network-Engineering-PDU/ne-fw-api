@@ -72,6 +72,9 @@ class BaseNetworkConfig(BaseModel):
     lan2_ip: Optional[str] = None
     lan2_gateway: Optional[str] = None
     wifi_ip: Optional[str] = None
+    wifi_subnet_mask: Optional[str] = None
+    wifi_gateway: Optional[str] = None
+    wifi_dns: Optional[str] = None
 
 
 class MacNetworkConfig(BaseNetworkConfig):

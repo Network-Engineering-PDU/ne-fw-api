@@ -472,12 +472,38 @@ class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
         config._add_ethernet_connection.assert_awaited_once_with()
         config._add_wifi_connection.assert_awaited_once_with(
             route_metric=600,
-            force_dhcp=True,
         )
         self.assertEqual(config.eth_interface, config.LAN2_IFACE)
         config._activate_ethernet_connection.assert_awaited_once_with()
         config._activate_wifi_connection.assert_awaited_once_with()
         config._apply_dual_lan_policy_routing.assert_not_awaited()
+
+    async def test_static_lan_wifi_uses_independent_wifi_configuration(self):
+        config = NetworkConfig()
+        config.type = NetworkType.ETH_STATIC
+        config.nw_mode = config.NW_LAN_WIFI
+        config.ip = "192.168.1.100"
+        config.mask = "255.255.255.0"
+        config.gateway = "192.168.1.1"
+        config.wifi_ip = "10.20.30.40"
+        config.wifi_mask = "255.255.255.0"
+        config.wifi_gateway = "10.20.30.1"
+        config.wifi_dns1 = "1.1.1.1"
+        config.wifi_dns2 = "8.8.8.8"
+        config.ssid = "PDU-WiFi"
+        config.psk = "correct-password"
+
+        with patch(
+            "ttne.network_config.utils.exec_command",
+            new=AsyncMock(return_value=(0, "")),
+        ) as exec_command:
+            self.assertTrue(await config._add_wifi_connection(route_metric=600))
+
+        args = exec_command.await_args.args
+        self.assertIn("10.20.30.40/24", args)
+        self.assertIn("10.20.30.1", args)
+        self.assertIn("1.1.1.1,8.8.8.8", args)
+        self.assertNotIn("192.168.1.100/24", args)
 
     async def test_wifi_profile_creation_reports_nmcli_failure(self):
         config = NetworkConfig()

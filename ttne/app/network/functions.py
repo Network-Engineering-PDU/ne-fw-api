@@ -18,7 +18,10 @@ NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
 NETWORK_APPLY_MUTEX = asyncio.Lock()
 DEFAULT_LAN1_IP = "192.168.1.100"
 DEFAULT_LAN2_IP = "192.168.1.200"
+DEFAULT_WIFI_IP = "192.168.1.150"
+DEFAULT_SUBNET_MASK = "255.255.255.0"
 DEFAULT_GATEWAY = "192.168.1.1"
+DEFAULT_DNS = "8.8.8.8"
 LEGACY_DEFAULT_LAN2_IP = "192.168.1.101"
 
 
@@ -173,6 +176,7 @@ def validate_network_config(config: models.BaseNetworkConfig):
         (config.lan2_ip, "LAN2 IP address"),
         (config.lan2_gateway, "LAN2 gateway"),
         (config.wifi_ip, "WiFi IP address"),
+        (config.wifi_gateway, "WiFi gateway"),
     ):
         _validate_ipv4(value, field, allow_empty=True)
 
@@ -185,9 +189,22 @@ def validate_network_config(config: models.BaseNetworkConfig):
         except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as exc:
             raise ValueError("Invalid subnet mask") from exc
 
+    if config.wifi_subnet_mask:
+        try:
+            ipaddress.IPv4Network(
+                f"0.0.0.0/{config.wifi_subnet_mask}",
+                strict=False,
+            )
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError) as exc:
+            raise ValueError("Invalid WiFi subnet mask") from exc
+
     if config.params.dns:
         for dns in config.params.dns.split(","):
             _validate_ipv4(dns.strip(), "DNS server", allow_empty=True)
+
+    if config.wifi_dns:
+        for dns in config.wifi_dns.split(","):
+            _validate_ipv4(dns.strip(), "WiFi DNS server", allow_empty=True)
 
     if not config.dhcp:
         _validate_ipv4(config.params.ip, "IP address")
@@ -207,6 +224,10 @@ def validate_network_config(config: models.BaseNetworkConfig):
                     raise ValueError(
                         f"{name} gateway must be in the same subnet as {name}"
                     )
+        if config.nw_mode == NetworkConfig.NW_LAN_WIFI:
+            _validate_ipv4(config.wifi_ip, "WiFi IP address")
+            if not config.wifi_subnet_mask:
+                raise ValueError("WiFi subnet mask is required")
 
 async def get_iface_mac(iface: str) -> str:
     mac = (await utils.read_file(f"/sys/class/net/{iface}/address")).strip()
@@ -291,6 +312,22 @@ async def get_network_config() -> models.MacNetworkConfig:
         _ipv4_or_empty(nw_config.ip),
         DEFAULT_LAN1_IP,
     )
+    wifi_subnet_mask = _coalesce(
+        ui_config.get("wifi_subnet_mask"),
+        nw_config.wifi_mask,
+        ui_config.get("subnet_mask"),
+        DEFAULT_SUBNET_MASK,
+    )
+    wifi_gateway = _coalesce(
+        ui_config.get("wifi_gateway"),
+        nw_config.wifi_gateway,
+        DEFAULT_GATEWAY,
+    )
+    wifi_dns = _coalesce(
+        ui_config.get("wifi_dns"),
+        ",".join(filter(None, (nw_config.wifi_dns1, nw_config.wifi_dns2))),
+        DEFAULT_DNS,
+    )
 
     lan1_ip = configured_lan1_ip
     lan2_ip = configured_lan2_ip
@@ -325,7 +362,7 @@ async def get_network_config() -> models.MacNetworkConfig:
                 current_wifi_ip,
                 _ipv4_or_empty(ui_config.get("wifi_ip")),
                 _ipv4_or_empty(nw_config.wifi_ip),
-                DEFAULT_LAN2_IP,
+                DEFAULT_WIFI_IP,
             )
         else:
             current_eth_ip, eth_iface = await _current_eth_ip(
@@ -341,7 +378,7 @@ async def get_network_config() -> models.MacNetworkConfig:
             await _current_ip(nw_config, "wlan0"),
             _ipv4_or_empty(ui_config.get("wifi_ip")),
             _ipv4_or_empty(nw_config.wifi_ip),
-            DEFAULT_LAN2_IP,
+            DEFAULT_WIFI_IP,
         )
     nw_config.eth_interface = eth_iface
     legacy_gateway = _coalesce(
@@ -387,6 +424,9 @@ async def get_network_config() -> models.MacNetworkConfig:
         lan2_ip=lan2_ip,
         lan2_gateway=lan2_gateway,
         wifi_ip=wifi_ip,
+        wifi_subnet_mask=wifi_subnet_mask,
+        wifi_gateway=wifi_gateway,
+        wifi_dns=wifi_dns,
     )
     logger.info(network_config)
     return network_config
@@ -438,6 +478,9 @@ def save_network_ui_config(
         "lan2_ip": lan2_ip,
         "lan2_gateway": getattr(config, "lan2_gateway", None) or "",
         "wifi_ip": wifi_ip,
+        "wifi_subnet_mask": getattr(config, "wifi_subnet_mask", None) or "",
+        "wifi_gateway": getattr(config, "wifi_gateway", None) or "",
+        "wifi_dns": getattr(config, "wifi_dns", None) or "",
     })
 
 
@@ -493,6 +536,13 @@ async def _set_network_config_locked(config: models.BaseNetworkConfig):
         )
         nw_config.lan2_gateway = getattr(config, "lan2_gateway", None) or ""
         nw_config.wifi_ip = getattr(config, 'wifi_ip', None) or ""
+        nw_config.wifi_mask = (
+            getattr(config, "wifi_subnet_mask", None) or nw_config.wifi_mask
+        )
+        nw_config.wifi_gateway = getattr(config, "wifi_gateway", None) or ""
+        wifi_dnss = (getattr(config, "wifi_dns", None) or "").split(",")
+        nw_config.wifi_dns1 = wifi_dnss[0].strip() if wifi_dnss else ""
+        nw_config.wifi_dns2 = wifi_dnss[1].strip() if len(wifi_dnss) > 1 else ""
 
         save_network_ui_config(
             config,
