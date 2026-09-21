@@ -338,6 +338,7 @@ async def get_network_config() -> models.MacNetworkConfig:
 
     if nw_mode == NetworkConfig.NW_LAN_WIFI and not dhcp:
         wifi_ip = _coalesce(
+            await _current_ip(nw_config, "wlan0"),
             _ipv4_or_empty(ui_config.get("wifi_ip")),
             _ipv4_or_empty(nw_config.wifi_ip),
             DEFAULT_LAN2_IP,
