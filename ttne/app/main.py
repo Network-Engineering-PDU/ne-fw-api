@@ -11,6 +11,9 @@ from ttne.app import settings
 from ttne.app import network
 from ttne.app import user_access
 from ttne.app import email_web
+from ttne.app import alarms
+from ttne.app import display_config
+from ttne.app.alarms import collector as alarms_collector
 from ttne.app.settings import functions as settings_functions
 from ttne.network_config import NetworkConfig
 
@@ -18,6 +21,8 @@ from ttne.om import Om
 from ttne.pmb import Pmb
 from ttne.config import config
 logger = logging.getLogger(__name__)
+
+ALARM_REFRESH_S = 5
 
 app = FastAPI()
 
@@ -42,6 +47,7 @@ async def init_persistent_settings():
     await settings_functions.init_persistent_settings()
     if config.PLATFORM != "desktop":
         utils.periodic_task(NetworkConfig().repair_ethernet_activation, 5)
+    utils.periodic_task(alarms_collector.refresh, ALARM_REFRESH_S)
 
 
 app.include_router(inputs.router)
@@ -50,3 +56,5 @@ app.include_router(settings.router)
 app.include_router(network.router)
 app.include_router(user_access.router)
 app.include_router(email_web.router)
+app.include_router(alarms.router)
+app.include_router(display_config.router)
