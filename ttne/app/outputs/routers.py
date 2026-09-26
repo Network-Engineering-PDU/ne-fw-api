@@ -64,6 +64,28 @@ async def get_all_switch_status() -> Union[Dict[int, bool], None]:
         resp[i] = await om.get_relay()
     return resp
 
+@router.get("/data")
+async def get_all_data() -> Dict[int, models.OutputData]:
+    """Live data of every outlet, keyed by line id (0-based, like the
+    per-outlet endpoints). Lets the web UI refresh all outlets in one call."""
+    resp = {}
+    for i, om in PDU.get_om().items():
+        om_data = om.get_data()
+        resp[i] = models.OutputData(
+            voltage=om_data["v"],
+            current=om_data["i"],
+            active_power=om_data["p"],
+            reactive_power=om_data["q"],
+            apparent_power=om_data["s"],
+            power_factor=om_data["pf"],
+            phase=om_data["ph"],
+            frequency=om_data["f"],
+            energy=om_data["e"],
+            conn=conn_name.get(om_data["conn"], conn_name[-1]),
+            fuse=om_data["fuse"],
+        )
+    return resp
+
 @router.get("/{line_id}/fw-version")
 async def get_fw_version(line_id: int,
         response: Response) -> Union[models.OutputFwVersion, None]:
