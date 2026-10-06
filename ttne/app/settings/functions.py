@@ -384,6 +384,17 @@ async def set_bluetooth_settings(settings):
         _write_bluetooth_config(settings.powered)
 
 
+async def _apply_bluetooth_idle_defaults():
+    """Bluetooth stays on, but is not discoverable, not pairable and not scanning
+    until the user changes that from the web UI or the touchscreen."""
+    try:
+        retval, output = await _bluetoothctl("pairable off", "discoverable off", "scan off")
+        if retval != 0:
+            logger.warning(f"Bluetooth idle defaults not fully applied: {output}")
+    except Exception as e:
+        logger.warning(f"Could not apply Bluetooth idle defaults: {e}")
+
+
 async def start_bluetooth():
     await ensure_bluetooth_agent()
     retval, output = await _bluetoothctl("power on")
@@ -995,3 +1006,5 @@ async def init_persistent_settings():
             await start_bluetooth()
     except Exception as e:
         logger.warning(f"Could not initialize Bluetooth: {e}")
+
+    await _apply_bluetooth_idle_defaults()
