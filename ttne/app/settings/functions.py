@@ -48,6 +48,9 @@ BT_AGENT_LAST_DEVICE = {"mac": "", "name": ""}
 # used for this: the sensor scanner keeps discovery on in the background, so
 # that flag stays true and the page could never show the scan as stopped.
 BT_USER_SCAN = False
+# Unpaired devices seen while the user's scan was on. BlueZ also caches devices
+# found by the sensor scanner, so the page lists only these and paired devices.
+BT_SCAN_FOUND = set()
 OTA_CHECK_THREAD = None
 OTA_CHECK_LOCK = threading.Lock()
 
@@ -334,6 +337,8 @@ async def get_bluetooth_status():
             continue
         mac = parts[1]
         seen.add(mac)
+        if BT_USER_SCAN:
+            BT_SCAN_FOUND.add(mac)
         fallback_name = parts[2] if len(parts) > 2 else mac
         device = {
             "mac": mac,
@@ -363,6 +368,9 @@ async def get_bluetooth_status():
                         device["rssi"] = int(info_line.split(":", 1)[1].strip())
                     except ValueError:
                         device["rssi"] = None
+        if not (device["paired"] or device["trusted"] or device["connected"]
+                or mac in BT_SCAN_FOUND):
+            continue
         status["devices"].append(device)
 
     return status
@@ -422,6 +430,7 @@ async def start_bluetooth_scan():
     await ensure_bluetooth_agent()
     if await _bt_agent_write("scan on"):
         BT_USER_SCAN = True
+        BT_SCAN_FOUND.clear()
     else:
         logger.warning("Bluetooth scan start failed: unable to write scan command")
 
