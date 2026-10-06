@@ -44,6 +44,10 @@ START_TIME = time.time()
 BT_AGENT_PROCESS = None
 BT_AGENT_PENDING = None
 BT_AGENT_LAST_DEVICE = {"mac": "", "name": ""}
+# Scan started from the Bluetooth page. BlueZ's own Discovering flag is not
+# used for this: the sensor scanner keeps discovery on in the background, so
+# that flag stays true and the page could never show the scan as stopped.
+BT_USER_SCAN = False
 OTA_CHECK_THREAD = None
 OTA_CHECK_LOCK = threading.Lock()
 
@@ -297,6 +301,8 @@ async def get_bluetooth_status():
         "devices": [],
     }
 
+    status["discovering"] = BT_USER_SCAN
+
     retval, output = await _bluetoothctl("show")
     if retval == 0 and output:
         for line in output.splitlines():
@@ -313,8 +319,6 @@ async def get_bluetooth_status():
                 status["pairable"] = _parse_bt_bool(line.split(":", 1)[1])
             elif line.startswith("Discoverable:"):
                 status["discoverable"] = _parse_bt_bool(line.split(":", 1)[1])
-            elif line.startswith("Discovering:"):
-                status["discovering"] = _parse_bt_bool(line.split(":", 1)[1])
 
     retval, output = await _bluetoothctl("devices")
     if retval != 0 or not output:
@@ -414,13 +418,18 @@ async def stop_bluetooth():
 
 
 async def start_bluetooth_scan():
+    global BT_USER_SCAN
     await ensure_bluetooth_agent()
-    if not await _bt_agent_write("scan on"):
+    if await _bt_agent_write("scan on"):
+        BT_USER_SCAN = True
+    else:
         logger.warning("Bluetooth scan start failed: unable to write scan command")
 
 
 async def stop_bluetooth_scan():
+    global BT_USER_SCAN
     await ensure_bluetooth_agent()
+    BT_USER_SCAN = False
     if not await _bt_agent_write("scan off"):
         logger.warning("Bluetooth scan stop failed: unable to write scan command")
 
