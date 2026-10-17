@@ -16,6 +16,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+from pydantic import ValidationError
 
 from ttne import utils
 from ttne import license as pdu_license
@@ -27,6 +28,7 @@ from ttne.snmp_config import (
 from ttne import ntp_config
 from ttne.sn_pn_generator import *
 from .. import gateway_helper
+from . import models
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ SWUPDATE_FILE = "/home/root/ttfile.bin"  # legacy; web/OTA use per-channel stagi
 CA_CERT_FILE = "/home/root/certs/cm.crt"
 CA_KEY_FILE = "/home/root/certs/cm.key"
 LICENSE_FILE = "/home/root/.ne/license"
-MODBUS_FILE = "/home/root/.ne/modbus_addr"
+MODBUS_FILE = "/home/root/.ne/modbus_config.json"
 COPY_FILE_BUFFER = 1024*1024
 
 START_TIME = time.time()
@@ -692,23 +694,97 @@ async def stop_modbus():
     if retval != 0:
         logger.warning("Can not stop Modbus")
 
-async def write_modbus(addr: int):
-    logger.info(f"Writing Modbus address ({addr})")
+DEFAULT_MODBUS_ADDR = 1
+DEFAULT_MODBUS_SETTINGS = {
+    "addr": DEFAULT_MODBUS_ADDR,
+    "baud_rate": 115200,
+    "parity": "N",
+    "stop_bits": 1,
+    "tcp_eth1_enabled": True,
+    "tcp_eth2_enabled": True,
+    "rtu_port1_enabled": True,
+    "rtu_port2_enabled": True,
+    "role": "slave",
+    "scan_first": 2,
+    "scan_last": 16,
+    "timeout_ms": 200,
+    "poll_interval_s": 5,
+    "offline_after": 3,
+}
+
+
+async def restart_modbus():
+    """Restarts modbus_server so it reads new settings, but only when the
+    Modbus service is enabled: saving settings must not switch it on."""
+    _ssh, _snmp, enabled = await nw_functions.read_services()
+    if not enabled:
+        logger.info("Modbus is disabled; settings saved without a restart")
+        return
+    logger.info("Restarting Modbus...")
+    retval, _ = await utils.shell("/etc/init.d/modbus_server restart")
+    if retval != 0:
+        logger.warning("Can not restart Modbus")
+
+
+async def write_modbus_settings(settings: dict):
+    logger.info(f"Writing Modbus settings ({settings})")
+    merged = {**DEFAULT_MODBUS_SETTINGS, **settings}
+    # Set from the hardware on every read, never stored.
+    merged.pop("rtu_port_control", None)
     with open(MODBUS_FILE, 'w+') as f:
-        f.write(f"{addr}")
+        json.dump(merged, f)
+
+
+def _valid_modbus_settings(data: dict) -> dict:
+    """Replaces any stored value the API no longer accepts with its default
+    (for example an address of 250, which older screens allowed), so one bad
+    field neither breaks GET nor discards the other settings."""
+    settings = {**DEFAULT_MODBUS_SETTINGS, **data}
+    settings.pop("rtu_port_control", None)
+    try:
+        models.Modbus(**settings)
+    except ValidationError as ex:
+        for error in ex.errors():
+            key = error["loc"][0]
+            if key in DEFAULT_MODBUS_SETTINGS:
+                logger.warning(f"Stored Modbus {key}={settings.get(key)!r} "
+                               f"is not valid; using {DEFAULT_MODBUS_SETTINGS[key]!r}")
+                settings[key] = DEFAULT_MODBUS_SETTINGS[key]
+    return settings
+
+
+async def read_modbus_settings() -> dict:
+    """Reads all Modbus settings (RTU serial params, per-port enable for TCP
+    and RTU, daisy chain role), defaulting and self-healing if the file is
+    missing, unreadable or holds values that are no longer valid.
+
+    modbus_server asks for this over HTTP as soon as it starts. Previously
+    this held only the RTU address, and returning -1 for a missing file used
+    to make its RTU thread give up and call exit(), which killed the whole
+    daemon, including its unrelated Modbus TCP server.
+    """
+    logger.info("Reading Modbus settings")
+    if os.path.isfile(MODBUS_FILE):
+        try:
+            with open(MODBUS_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return _valid_modbus_settings(data)
+            logger.warning("Modbus settings file is not an object; resetting to default")
+        except (ValueError, OSError) as ex:
+            logger.warning(f"Modbus settings file was unreadable ({ex}); resetting to default")
+    await write_modbus_settings(DEFAULT_MODBUS_SETTINGS)
+    return dict(DEFAULT_MODBUS_SETTINGS)
+
+
+async def write_modbus(addr: int):
+    """Back-compat for callers that only touch the RTU address."""
+    settings = await read_modbus_settings()
+    settings["addr"] = addr
+    await write_modbus_settings(settings)
 
 async def read_modbus() -> int:
-    logger.info("Reading Modbus address")
-    if not os.path.isfile(MODBUS_FILE):
-        return -1
-    with open(MODBUS_FILE, 'r+') as f:
-        line = f.readline()
-        if line[-1] == "\n":
-            line = line[:-1]
-        addr = int(line)
-        logger.info(f"Modbus address: {addr}")
-        return addr
-    return -1
+    return (await read_modbus_settings())["addr"]
 
 
 # Update Status Management
@@ -1015,7 +1091,10 @@ async def init_persistent_settings():
     
     if not os.path.isfile(BLUETOOTH_CONFIG_FILE):
         _write_bluetooth_config(DEFAULT_BLUETOOTH_POWERED)
-    
+
+    if not os.path.isfile(MODBUS_FILE):
+        await write_modbus_settings(DEFAULT_MODBUS_SETTINGS)
+
     # Apply Bluetooth default if configured
     try:
         bt_powered = _read_bluetooth_config()
