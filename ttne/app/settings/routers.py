@@ -1,13 +1,13 @@
-import asyncio
 import os
 from datetime import datetime as dt
 from typing import List, Union
 
-from fastapi import APIRouter, Response, File, UploadFile
+from fastapi import APIRouter, HTTPException, Response, File, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from ttne.server import PDU
 from ttne import ntp_config
+from ttne.config import Config
 from ttne.sn_pn_generator import *
 from . import models, functions
 from .. import gateway_helper
@@ -242,18 +242,28 @@ async def post_bluetooth_pairing_action(action: str, response: Response):
     if not success:
         response.status_code = 400
 
+def _modbus_response(settings: dict) -> models.Modbus:
+    return models.Modbus(
+        **settings, rtu_port_control=Config.MODBUS_RTU_PORT_CONTROL)
+
+
 @router.put("/modbus")
-async def put_modbus_addr(data: models.Modbus):
-    await functions.write_modbus(data.addr)
-    await asyncio.sleep(0.5)
-    await functions.stop_modbus()
-    await asyncio.sleep(0.5)
-    await functions.start_modbus()
+async def put_modbus_settings(data: models.Modbus) -> models.Modbus:
+    # Only the fields sent change; the rest keep their stored values, so a
+    # client that knows only the address can't reset the other settings.
+    settings = await functions.read_modbus_settings()
+    settings.update(data.dict(exclude_unset=True))
+    settings["rtu_port_control"] = Config.MODBUS_RTU_PORT_CONTROL
+    error = models.modbus_settings_error(settings)
+    if error is not None:
+        raise HTTPException(status_code=422, detail=error)
+    await functions.write_modbus_settings(settings)
+    await functions.restart_modbus()
+    return _modbus_response(await functions.read_modbus_settings())
 
 @router.get("/modbus")
-async def get_modbus_addr() -> models.Modbus:
-    addr = await functions.read_modbus()
-    return models.Modbus(addr=addr)
+async def get_modbus_settings() -> models.Modbus:
+    return _modbus_response(await functions.read_modbus_settings())
 
 
 @router.get("/update-status")

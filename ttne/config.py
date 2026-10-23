@@ -13,5 +13,9 @@ class Config:
     NE_PORT = 80
     NE_IP = "localhost"
     PLATFORM = "cm"
+    # True only on boards with one RS-485 transceiver per "485" jack, so each
+    # jack can be switched on its own. Current boards wire both jacks to one
+    # transceiver (schematic CM V0.1.1, U10), so this stays False for them.
+    MODBUS_RTU_PORT_CONTROL = False
 
 config = Config()
