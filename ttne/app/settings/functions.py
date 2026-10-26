@@ -672,27 +672,59 @@ async def stop_snmp():
         await nw_functions.write_services(ssh, 0, modbus)
     return True
 
-async def start_modbus():
-    logger.info("Starting Modbus...")
-    ssh, snmp, modbus = await nw_functions.read_services()
-    if modbus:
-        logger.warning("Modbus alredy started")
-        return
-    await nw_functions.write_services(ssh, snmp, 1)
+async def _modbus_running():
+    retval, _ = await utils.shell("pidof modbus_server")
+    return retval == 0
+
+
+async def _launch_modbus():
     retval, _ = await utils.shell("/etc/init.d/modbus_server start")
     if retval != 0:
         logger.warning("Can not start Modbus")
+        return False
+    return True
+
+
+async def start_modbus():
+    """Turns Modbus on. Checks the daemon itself rather than trusting the
+    persisted flag: after a reboot the flag can say "on" while nothing runs,
+    and the start used to be skipped as "already started"."""
+    logger.info("Starting Modbus...")
+    ssh, snmp, modbus = await nw_functions.read_services()
+    if not modbus:
+        await nw_functions.write_services(ssh, snmp, 1)
+    if await _modbus_running():
+        logger.info("Modbus already running")
+        return True
+    return await _launch_modbus()
+
+
+async def restore_modbus():
+    """Starts Modbus after boot when it was left enabled. modbus_server reads
+    its settings from this HTTP API, so call it once Uvicorn is serving."""
+    _ssh, _snmp, modbus = await nw_functions.read_services()
+    if not modbus:
+        logger.info("Modbus is disabled; leaving daemon stopped")
+        return True
+    if await _modbus_running():
+        return True
+    logger.info("Restoring enabled Modbus service")
+    return await _launch_modbus()
+
 
 async def stop_modbus():
     logger.info("Stopping Modbus...")
     ssh, snmp, modbus = await nw_functions.read_services()
-    if not modbus:
-        logger.warning("Modbus alredy stopped")
-        return
-    await nw_functions.write_services(ssh, snmp, 0)
+    if modbus:
+        await nw_functions.write_services(ssh, snmp, 0)
+    if not await _modbus_running():
+        logger.info("Modbus already stopped")
+        return True
     retval, _ = await utils.shell("/etc/init.d/modbus_server stop")
     if retval != 0:
         logger.warning("Can not stop Modbus")
+        return False
+    return True
 
 DEFAULT_MODBUS_ADDR = 1
 DEFAULT_MODBUS_SETTINGS = {

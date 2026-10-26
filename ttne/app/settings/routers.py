@@ -195,12 +195,14 @@ async def post_stop_snmp(response: Response):
         response.status_code = 500
 
 @router.post("/start-modbus")
-async def post_start_modbus():
-    await functions.start_modbus()
+async def post_start_modbus(response: Response):
+    if not await functions.start_modbus():
+        response.status_code = 500
 
 @router.post("/stop-modbus")
-async def post_stop_modbus():
-    await functions.stop_modbus()
+async def post_stop_modbus(response: Response):
+    if not await functions.stop_modbus():
+        response.status_code = 500
 
 @router.get("/bluetooth")
 async def get_bluetooth() -> models.BluetoothStatus:
