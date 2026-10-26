@@ -6,7 +6,7 @@ web UI can change display settings through this API.
 import os
 import threading
 
-from .models import DisplayConfig, TEXT_FIELDS
+from .models import DisplayConfig, LANGUAGES, TEXT_FIELDS
 
 CONFIG_FILE = "/home/root/.cmdisplay.config"
 _lock = threading.Lock()
@@ -38,6 +38,9 @@ def load_config(path=CONFIG_FILE) -> DisplayConfig:
         data["skip_login"] = int(raw["skip_login"]) != 0
     except (KeyError, ValueError):
         pass
+    # An unknown code keeps the default instead of discarding the whole file.
+    if raw.get("language") in LANGUAGES:
+        data["language"] = raw["language"]
     for key in TEXT_FIELDS:
         if key in raw:
             data[key] = raw[key][:255]
@@ -53,6 +56,7 @@ def save_config(config: DisplayConfig, path=CONFIG_FILE) -> None:
         f"rotation={config.rotation}",
         f"inactivity_time={config.inactivity_time}",
         f"skip_login={1 if config.skip_login else 0}",
+        f"language={config.language}",
     ]
     lines += [f"{key}={getattr(config, key)}" for key in TEXT_FIELDS]
     directory = os.path.dirname(path)
