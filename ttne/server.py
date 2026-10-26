@@ -213,6 +213,11 @@ class Server:
                 await settings_functions.restore_snmp()
             except Exception:
                 logger.exception("Could not restore SNMP service")
+            # modbus_server reads its settings from this API at startup.
+            try:
+                await settings_functions.restore_modbus()
+            except Exception:
+                logger.exception("Could not restore Modbus service")
 
         self.ne = DjangoManager()
         self.loop.create_task(self.ne.start())

@@ -134,5 +134,73 @@ class ModbusSettingsRulesTest(unittest.TestCase):
                     models.Modbus(**{field: value})
 
 
+class ModbusServiceTest(unittest.IsolatedAsyncioTestCase):
+    """After a reboot the services file can say Modbus is on while no
+    modbus_server runs; start, stop and restore must look at the daemon."""
+
+    def patches(self, services, shell_results):
+        from unittest.mock import AsyncMock, patch
+        read = patch.object(functions.nw_functions, "read_services",
+                            AsyncMock(return_value=services))
+        write = patch.object(functions.nw_functions, "write_services",
+                             AsyncMock())
+        shell = patch.object(functions.utils, "shell",
+                             AsyncMock(side_effect=shell_results))
+        return read, write, shell
+
+    async def run_with(self, func, services, shell_results):
+        read, write, shell = self.patches(services, shell_results)
+        with read, write as write_mock, shell as shell_mock:
+            result = await func()
+        commands = [c.args[0] for c in shell_mock.await_args_list]
+        return result, write_mock, commands
+
+    async def test_start_launches_daemon_when_flag_is_on_but_nothing_runs(self):
+        result, write, commands = await self.run_with(
+            functions.start_modbus, (0, 0, 1), [(1, ""), (0, "")])
+        self.assertTrue(result)
+        write.assert_not_awaited()
+        self.assertEqual(["pidof modbus_server",
+                          "/etc/init.d/modbus_server start"], commands)
+
+    async def test_start_does_not_launch_a_second_daemon(self):
+        result, _write, commands = await self.run_with(
+            functions.start_modbus, (0, 0, 1), [(0, "123")])
+        self.assertTrue(result)
+        self.assertEqual(["pidof modbus_server"], commands)
+
+    async def test_start_saves_the_flag_when_it_was_off(self):
+        result, write, _commands = await self.run_with(
+            functions.start_modbus, (1, 0, 0), [(1, ""), (0, "")])
+        self.assertTrue(result)
+        write.assert_awaited_once_with(1, 0, 1)
+
+    async def test_stop_kills_a_daemon_even_when_flag_is_off(self):
+        result, write, commands = await self.run_with(
+            functions.stop_modbus, (0, 0, 0), [(0, "123"), (0, "")])
+        self.assertTrue(result)
+        write.assert_not_awaited()
+        self.assertEqual(["pidof modbus_server",
+                          "/etc/init.d/modbus_server stop"], commands)
+
+    async def test_restore_starts_enabled_modbus_after_boot(self):
+        result, _write, commands = await self.run_with(
+            functions.restore_modbus, (0, 0, 1), [(1, ""), (0, "")])
+        self.assertTrue(result)
+        self.assertEqual(["pidof modbus_server",
+                          "/etc/init.d/modbus_server start"], commands)
+
+    async def test_restore_leaves_disabled_modbus_stopped(self):
+        result, _write, commands = await self.run_with(
+            functions.restore_modbus, (0, 0, 0), [])
+        self.assertTrue(result)
+        self.assertEqual([], commands)
+
+    async def test_restore_reports_a_failed_start(self):
+        result, _write, _commands = await self.run_with(
+            functions.restore_modbus, (0, 0, 1), [(1, ""), (1, "failed")])
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()
