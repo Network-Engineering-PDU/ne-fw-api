@@ -47,11 +47,29 @@ class DisplayConfigTest(unittest.TestCase):
         self.assertIn("pdu_rack=Rack 4", lines)
         self.assertFalse(os.path.exists(self.path + ".tmp"))
 
+    def test_language_roundtrip(self):
+        config = models.DisplayConfig(language="zh-hans")
+        store.save_config(config, self.path)
+        self.assertEqual("zh-hans", store.load_config(self.path).language)
+        with open(self.path) as f:
+            self.assertIn("language=zh-hans", f.read().splitlines())
+
+    def test_language_defaults_to_english(self):
+        self.assertEqual("en", store.load_config(self.path).language)
+
+    def test_unknown_language_in_file_keeps_the_other_settings(self):
+        with open(self.path, "w") as f:
+            f.write("rotation=3\nlanguage=xx\npdu_rack=R9\n")
+        config = store.load_config(self.path)
+        self.assertEqual("en", config.language)
+        self.assertEqual(3, config.rotation)
+        self.assertEqual("R9", config.pdu_rack)
+
     def test_rejects_bad_values(self):
         for kwargs in ({"rotation": 4}, {"rotation": -1},
                        {"inactivity_time": 0}, {"inactivity_time": 301},
                        {"pdu_rack": "a\nrotation=0"},
-                       {"pdu_ups": "x" * 256}):
+                       {"pdu_ups": "x" * 256}, {"language": "fr"}):
             with self.assertRaises(ValidationError, msg=str(kwargs)):
                 models.DisplayConfig(**kwargs)
 
