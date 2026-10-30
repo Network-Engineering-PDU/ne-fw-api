@@ -10,6 +10,41 @@ from ttne.network_type import NetworkType
 logger = logging.getLogger(__name__)
 NETWORK_APPLY_LOCK_FILE = "/tmp/ttne_network_apply.lock"
 NETWORK_UI_CONFIG_FILE = "/home/root/.ne/network_ui_config.json"
+# The last WiFi password, kept when a mode without WiFi deletes the WiFi
+# profile, so that going back to WiFi doesn't need it typed again (the screen
+# and the web UI never get it back). Root only, like NetworkManager's
+# profiles.
+WIFI_SECRET_FILE = "/home/root/.ne/wifi_secret.json"
+
+
+def remember_wifi_psk(ssid, psk):
+    if not ssid or not psk:
+        return
+    directory = os.path.dirname(WIFI_SECRET_FILE)
+    temporary = WIFI_SECRET_FILE + ".tmp"
+    try:
+        os.makedirs(directory, exist_ok=True)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                             0o600)
+        with os.fdopen(descriptor, "w") as output:
+            json.dump({"ssid": ssid, "psk": psk}, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, WIFI_SECRET_FILE)
+    except OSError as exc:
+        logger.warning("Can not keep the WiFi password: %s", exc)
+
+
+def remembered_wifi_psk(ssid):
+    try:
+        with open(WIFI_SECRET_FILE, "r") as source:
+            data = json.load(source)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict) or data.get("ssid") != ssid:
+        return ""
+    psk = data.get("psk")
+    return psk if isinstance(psk, str) else ""
 
 
 class NetworkConfig():
@@ -696,6 +731,7 @@ class NetworkConfig():
         if retval != 0:
             logger.error("Can not create WiFi profile: %s", output.strip())
             return False
+        remember_wifi_psk(self.ssid, self.psk)
         return True
 
     async def _activate_wifi_connection(self):
@@ -717,14 +753,17 @@ class NetworkConfig():
             "nmcli", "-g", "802-11-wireless.ssid",
             "connection", "show", self.WIFI_CONN,
         )
-        if retval != 0 or output.strip() != ssid:
-            return ""
-        retval, output = await utils.exec_command(
-            "nmcli", "--show-secrets", "-g",
-            "802-11-wireless-security.psk",
-            "connection", "show", self.WIFI_CONN,
-        )
-        return output.strip() if retval == 0 else ""
+        if retval == 0 and output.strip() == ssid:
+            retval, output = await utils.exec_command(
+                "nmcli", "--show-secrets", "-g",
+                "802-11-wireless-security.psk",
+                "connection", "show", self.WIFI_CONN,
+            )
+            if retval == 0 and output.strip():
+                return output.strip()
+        # The profile is gone (a mode without WiFi deletes it) or lost its
+        # password: the one kept when it was created.
+        return remembered_wifi_psk(ssid)
 
     async def get_current_ip(self):
         if await self._is_dual_lan_configured():

@@ -22,6 +22,10 @@ async def get_info(response: Response) -> models.NetworkInfo:
         return
     return info
 
+@router.get("/wifi-status")
+async def get_wifi_status() -> models.WifiStatus:
+    return await functions.get_wifi_status()
+
 @router.get("/interfaces")
 async def get_interfaces(response: Response) -> models.MacNetworkConfig:
     interfaces = await functions.get_network_config()
@@ -45,6 +49,17 @@ async def put_interfaces(data: models.BaseNetworkConfig, response: Response):
     except ValueError:
         response.status_code = 400
         return
+
+    # A WiFi profile without a password never connects, and applying it
+    # tears the working network down first: refuse it while that's still
+    # possible to tell (the change is applied after this response).
+    if (
+        data.nw_mode in (NetworkConfig.NW_WIFI_ONLY, NetworkConfig.NW_LAN_WIFI)
+        and not data.params.password
+        and not await NetworkConfig().get_saved_wifi_psk(data.params.ssid)
+    ):
+        response.status_code = 400
+        return {"detail": "WiFi password required", "code": "wifi_password"}
 
     if (
         data.nw_mode == NetworkConfig.NW_DUAL_LAN

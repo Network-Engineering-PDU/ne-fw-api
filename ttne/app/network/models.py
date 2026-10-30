@@ -51,6 +51,12 @@ class NetworkInfo(BaseModel):
     connected: bool
 
 
+class WifiStatus(BaseModel):
+    enabled: bool                   # the network mode uses Wi-Fi
+    connected: bool = False
+    signal: Optional[int] = None    # dBm
+
+
 class NetworkConfigParams(BaseModel):
     ip: Union[str, None] = None
     subnet_mask: Union[str, None] = None
@@ -80,6 +86,8 @@ class BaseNetworkConfig(BaseModel):
 class MacNetworkConfig(BaseNetworkConfig):
     ethernet_mac: str
     wifi_mac: str
+    # A password is kept for the SSID: saving WiFi without one keeps it.
+    wifi_password_saved: bool = False
 
 
 class Services(BaseModel):

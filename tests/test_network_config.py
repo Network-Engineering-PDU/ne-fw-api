@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, call, patch
 
@@ -6,6 +8,19 @@ from ttne.network_type import NetworkType
 
 
 class NetworkConfigTest(unittest.IsolatedAsyncioTestCase):
+
+    def setUp(self):
+        # Creating a WiFi profile keeps its password in a file.
+        self.directory = tempfile.TemporaryDirectory()
+        self.secret = patch(
+            "ttne.network_config.WIFI_SECRET_FILE",
+            os.path.join(self.directory.name, "wifi_secret.json"),
+        )
+        self.secret.start()
+
+    def tearDown(self):
+        self.secret.stop()
+        self.directory.cleanup()
 
     async def test_active_interface_detection_uses_exact_state(self):
         config = NetworkConfig()

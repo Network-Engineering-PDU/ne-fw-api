@@ -6,7 +6,7 @@ import json
 import ipaddress
 
 from ttne import utils
-from ttne.network_config import NetworkConfig
+from ttne.network_config import NetworkConfig, remembered_wifi_psk
 from ttne.network_type import NetworkType
 from . import models
 
@@ -246,6 +246,20 @@ async def get_network_info() -> models.NetworkInfo:
         )
     return models.NetworkInfo(connected=True)
 
+async def get_wifi_status() -> models.WifiStatus:
+    """Wi-Fi link and signal for the touchscreen status bar, which asks
+    every few seconds: read from the driver with iw, not NetworkManager."""
+    ui_config = _load_network_ui_config()
+    nw_mode = _saved_int(ui_config, "nw_mode", NetworkConfig.NW_SINGLE_LAN)
+    if nw_mode not in (NetworkConfig.NW_WIFI_ONLY, NetworkConfig.NW_LAN_WIFI):
+        return models.WifiStatus(enabled=False)
+    return_code, output = await utils.exec_command("iw", "dev", "wlan0", "link")
+    if return_code != 0 or not output.startswith("Connected to"):
+        return models.WifiStatus(enabled=True)
+    signal = re.search(r"^\s*signal:\s*(-?\d+)\s*dBm", output, re.MULTILINE)
+    return models.WifiStatus(enabled=True, connected=True,
+                             signal=int(signal.group(1)) if signal else None)
+
 async def get_network_config() -> models.MacNetworkConfig:
     logging.info("Getting network config...")
     ui_config = _load_network_ui_config()
@@ -411,6 +425,11 @@ async def get_network_config() -> models.MacNetworkConfig:
         get_iface_mac(eth_iface),
         get_iface_mac("wlan0"),
     )
+    ssid = config_params.ssid or ""
+    # The kept copy first: asking NetworkManager takes two nmcli calls.
+    wifi_password_saved = bool(ssid) and bool(
+        remembered_wifi_psk(ssid) or await nw_config.get_saved_wifi_psk(ssid)
+    )
     network_config = models.MacNetworkConfig(
         type=network_type,
         dhcp=dhcp,
@@ -427,6 +446,7 @@ async def get_network_config() -> models.MacNetworkConfig:
         wifi_subnet_mask=wifi_subnet_mask,
         wifi_gateway=wifi_gateway,
         wifi_dns=wifi_dns,
+        wifi_password_saved=wifi_password_saved,
     )
     logger.info(network_config)
     return network_config

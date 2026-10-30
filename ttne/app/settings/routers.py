@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Response, File, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from ttne.server import PDU
-from ttne import ntp_config
+from ttne import datetime_config, ntp_config
 from ttne.config import Config
 from ttne.sn_pn_generator import *
 from . import models, functions
@@ -80,6 +80,28 @@ async def put_ntp_settings(data: models.NtpSettings, response: Response):
         response.status_code = 500
     settings.update(await ntp_config.service_status())
     return settings
+
+@router.get("/datetime", response_model=models.DateTimeStatus)
+async def get_datetime_settings():
+    return await datetime_config.status()
+
+
+@router.put("/datetime", response_model=models.DateTimeStatus)
+async def put_datetime_settings(data: models.DateTimeSettings):
+    datetime_config.save_settings(data.dict())
+    return await datetime_config.status()
+
+
+@router.put("/datetime/clock", response_model=models.DateTimeStatus)
+async def put_datetime_clock(data: models.ClockTime):
+    if ntp_config.load_settings()["enabled"]:
+        raise HTTPException(status_code=409,
+                            detail="Turn off NTP to set the time by hand")
+    settings = datetime_config.load_settings()
+    if not await datetime_config.set_clock(data.local_time,
+                                           settings["timezone"]):
+        raise HTTPException(status_code=500, detail="Could not set the time")
+    return await datetime_config.status()
 
 @router.put("/snmp-nms")
 async def put_snmp_nms(data: models.SnmpNms):

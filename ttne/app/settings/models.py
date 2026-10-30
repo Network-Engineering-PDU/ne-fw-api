@@ -236,3 +236,35 @@ class NtpSettings(BaseModel):
 class NtpStatus(NtpSettings):
     running: bool = False
     synchronized: bool = False
+
+
+class DateTimeSettings(BaseModel):
+    timezone: str = "UTC"
+    hour_format: int = 24
+
+    @validator("timezone")
+    def timezone_must_be_known(cls, value):
+        from ttne.datetime_config import validate_timezone
+        return validate_timezone(value)
+
+    @validator("hour_format")
+    def hour_format_must_be_12_or_24(cls, value):
+        if value not in (12, 24):
+            raise ValueError("Hour format must be 12 or 24")
+        return value
+
+
+class DateTimeStatus(DateTimeSettings):
+    clock_set: bool = False
+    ntp_enabled: bool = True
+    synchronized: bool = False
+
+
+class ClockTime(BaseModel):
+    local_time: str     # "YYYY-MM-DD HH:MM" in the saved time zone
+
+    @validator("local_time")
+    def local_time_must_be_valid(cls, value):
+        from ttne.datetime_config import parse_local_time
+        parse_local_time(value)
+        return value
