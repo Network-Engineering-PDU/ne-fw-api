@@ -1,6 +1,6 @@
 # NET-POWER PDU — Remote Firmware Update (OTA)
 
-Over-the-air firmware updates for Variscite i.MX7 PDUs. Firmware is hosted on **GitHub**. The device checks periodically, compares semantic versions, downloads signed update images, and installs them using the existing A/B `swupdate` pipeline.
+Over-the-air firmware updates for Variscite i.MX7 PDUs. Firmware is hosted on **GitHub** by default, or on any web server the user enters (section 2b). The device checks periodically (daily, weekly, monthly or yearly), compares semantic versions, downloads signed update images, and installs them using the existing A/B `swupdate` pipeline after the user confirms on the PDU display.
 
 ## Update channel coordination (web, USB, OTA)
 
@@ -127,6 +127,34 @@ git push
 gh release create v1.2.5 ota/metadata.json ota/firmware.bin
 ```
 
+## 2b. Another update server
+
+The update location is set on the touchscreen (System Update > Remote server
+update file location) or in the web UI (Settings > Software update > Update
+server). It picks the source:
+
+| Location entered | Source |
+|------------------|--------|
+| empty, or `https://github.com/Network-Engineering-PDU/firmware-update` | default GitHub repository |
+| `github.com/<owner>/<repo>[/tree/<branch>/<folder>]` | that GitHub repository |
+| anything else: `192.168.1.50`, `updates.example.com:8080/pdu`, `http://10.0.0.5/fw` | a web server folder |
+
+A web server folder holds the same two files as the GitHub repository:
+`metadata.json` (section 3) and the signed `ttfile.bin` it names. Any HTTP
+server works, for example on a PC: `python3 -m http.server 8080` in the folder
+that holds `firmware/metadata.json` and `firmware/ttfile.bin`, and the location
+`192.168.1.50:8080/firmware`.
+
+- Without `http://` or `https://` the PDU tries HTTPS, then HTTP. Plain HTTP
+  is safe for the firmware: its SHA-256 is checked against the metadata and the
+  installer checks its signature (`public.pem`), so only firmware signed with
+  the private key installs.
+- A server on the local network needs no internet: the internet probe is only
+  done for GitHub.
+- The location is saved in `/home/root/.ne/update_config` (second line) and,
+  resolved, in `ota_config.json` (`provider`: `github_repo` or `http_server`,
+  `server_url`). An invalid location is refused (HTTP 422).
+
 ## 3. Metadata file structure
 
 ### Remote: `metadata.json` (in GitHub repo or release)
@@ -195,7 +223,14 @@ is_newer = Version(remote) > Version(local)
 ## 5. Linux daemon design
 
 - **Process**: `ttne-ota` (forking daemon, PID file at `/home/root/.ne/ota/ttne-ota.pid`)
-- **Loop**: sleep `check_interval_hours` → `run_check()` → repeat
+- **Loop**: every minute, check when due: `check_interval_hours` (24, 168,
+  720 or 8760) after the last completed check saved in `ota_state.json`, so a
+  restart or reboot doesn't check early and a new interval applies at once.
+  A failed or skipped check (no internet, server down) is retried after an
+  hour; a clock that went back (no clock battery) checks at once.
+- **Off**: with Automatic Updates off the daemon doesn't check; "Check now"
+  (web UI) still does.
+- **Start**: `/etc/init.d/ttne-ota` (package `python3-ttne-ota`, in the image).
 - **Logging**: `~/.ne/logs/log` (shared RotatingFileHandler with `ttnedaemon`)
 - **CLI**:
   - `ttne-ota start` — start daemon

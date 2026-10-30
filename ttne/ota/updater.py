@@ -14,13 +14,16 @@ from ttne.update.coordinator import UpdateCoordinator, UpdateSource
 
 from . import config as ota_config
 from . import state as ota_state
-from .remote import RemoteError, create_client, validate_config
+from .remote import RemoteError, create_client, is_github, validate_config
 from .version_compare import is_newer, parse_version
 
 logger = logging.getLogger(__name__)
 
 REQUIRED_METADATA_FIELDS = ("firmware_version", "firmware_file", "sha256")
 OFFLINE_MESSAGE = "Internet connection unavailable; GitHub OTA check skipped"
+# The schedule's retry after a failed or skipped check (never sooner than the
+# check interval otherwise).
+RETRY_SECONDS = 3600
 INTERNET_PROBE_TARGETS = (
     ("1.1.1.1", 443),
     ("8.8.8.8", 443),
@@ -164,10 +167,13 @@ class OtaUpdater:
         self._clear_pending_metadata()
         return ota_state.public_view()
 
-    def _fetch_remote_metadata(self):
-        """Download and validate remote metadata.json. Returns (client, metadata)."""
+    def _fetch_remote_metadata(self, force: bool = False):
+        """Download and validate remote metadata.json. Returns (client, metadata).
+
+        force: a check the user asked for, also while automatic updates are
+        off."""
         self.cfg = ota_config.load_config()
-        if not self.cfg.get("enabled", True):
+        if not force and not self.cfg.get("enabled", True):
             return None, None
 
         config_error = validate_config(self.cfg)
@@ -178,7 +184,8 @@ class OtaUpdater:
         if not can_check:
             raise RuntimeError(reason)
 
-        if not internet_available():
+        # A server on the local network works without the internet.
+        if is_github(self.cfg) and not internet_available():
             raise InternetUnavailable(OFFLINE_MESSAGE)
 
         client = create_client(self.cfg)
@@ -186,11 +193,11 @@ class OtaUpdater:
         self._validate_metadata(metadata)
         return client, metadata
 
-    def peek_metadata(self) -> Dict[str, Any]:
+    def peek_metadata(self, force: bool = False) -> Dict[str, Any]:
         """Fetch remote metadata and record versions without downloading firmware."""
         try:
             ota_state.set_status("checking")
-            _, metadata = self._fetch_remote_metadata()
+            _, metadata = self._fetch_remote_metadata(force)
             if metadata is None:
                 logger.info("OTA disabled in config")
                 return ota_state.public_view()
@@ -213,9 +220,14 @@ class OtaUpdater:
             ota_state.set_status("failed", str(exc))
             return ota_state.public_view()
 
-    def check_for_update(self) -> Dict[str, Any]:
+    def check_for_update(self, force: bool = False) -> Dict[str, Any]:
+        """Checks the update location; a newer firmware waits for the user's
+        confirmation on the PDU display.
+
+        force: a check the user asked for ("Check now"), also while automatic
+        updates are off."""
         self.cfg = ota_config.load_config()
-        if not self.cfg.get("enabled", True):
+        if not force and not self.cfg.get("enabled", True):
             logger.info("OTA disabled in config")
             return ota_state.public_view()
 
@@ -248,7 +260,7 @@ class OtaUpdater:
 
         ota_state.set_status("checking")
         try:
-            client, metadata = self._fetch_remote_metadata()
+            _, metadata = self._fetch_remote_metadata(force)
             if metadata is None:
                 logger.info("OTA disabled in config")
                 return ota_state.public_view()
@@ -298,8 +310,6 @@ class OtaUpdater:
             ota_state.clear_pending_update()
             current_state = ota_state.load_state()
 
-        auto_update, _ = settings_functions._read_update_config()
-
         allowed, block_reason = UpdateCoordinator.can_begin(UpdateSource.OTA)
         if not allowed:
             logger.info("OTA install deferred: %s", block_reason)
@@ -309,58 +319,8 @@ class OtaUpdater:
             )
             return ota_state.public_view()
 
-        if auto_update:
-            return self._prepare_pending_update(metadata)
-
         logger.info("OTA update available: %s -> %s", installed, remote_version)
-        return self._perform_update(client, metadata)
-
-    def _perform_update(self, client, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        firmware_name = metadata["firmware_file"]
-        expected_sha = metadata["sha256"].lower()
-        staging = UpdateCoordinator.ensure_staging_dir(UpdateSource.OTA)
-        version = metadata["firmware_version"]
-
-        ok, reason = UpdateCoordinator.begin(
-            UpdateSource.OTA, "staging", firmware_path=staging, version=version)
-        if not ok:
-            ota_state.update_state(last_error=reason)
-            return ota_state.public_view()
-
-        try:
-            ota_state.set_status("downloading", download_progress=0)
-            client.download_firmware(
-                firmware_name,
-                staging,
-                progress_cb=self._progress,
-            )
-
-            ota_state.set_status("verifying")
-            actual_sha = self._sha256_file(staging)
-            if actual_sha != expected_sha:
-                raise ValueError(
-                    f"SHA256 mismatch (expected {expected_sha}, got {actual_sha})")
-
-            ota_state.set_status("installing")
-            self._save_pending_version(version)
-            self._install_firmware(staging, version)
-            return ota_state.public_view()
-        except Exception as exc:
-            logger.error("OTA update failed: %s", exc)
-            if os.path.isfile(staging):
-                try:
-                    os.remove(staging)
-                except OSError:
-                    pass
-            UpdateCoordinator.end(UpdateSource.OTA, success=False)
-            ota_state.set_status("failed", str(exc), download_progress=0)
-            return ota_state.public_view()
-
-    def _install_firmware(self, staging_path: str, new_version: str) -> None:
-        """Install firmware using the existing signed update pipeline."""
-        UpdateCoordinator.set_phase("installing", firmware_path=staging_path)
-        self._schedule_installer(staging_path)
-        ota_state.update_state(status="pending_reboot", available_version=new_version)
+        return self._prepare_pending_update(metadata)
 
     def run_pending_update(self) -> Dict[str, Any]:
         self.cfg = ota_config.load_config()
@@ -373,9 +333,9 @@ class OtaUpdater:
             return ota_state.public_view()
 
 
-def run_check() -> Dict[str, Any]:
-    return OtaUpdater().check_for_update()
+def run_check(force: bool = False) -> Dict[str, Any]:
+    return OtaUpdater().check_for_update(force)
 
 
-def run_peek() -> Dict[str, Any]:
-    return OtaUpdater().peek_metadata()
+def run_peek(force: bool = False) -> Dict[str, Any]:
+    return OtaUpdater().peek_metadata(force)

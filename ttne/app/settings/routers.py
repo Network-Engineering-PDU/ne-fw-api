@@ -298,12 +298,15 @@ async def get_update_status(refresh: bool = False) -> models.UpdateStatus:
 
 @router.put("/update-settings")
 async def put_update_settings(data: models.UpdateSettings):
-    functions.set_update_settings(
-        data.auto_update,
-        data.update_server,
-        data.check_interval_hours,
-        data.ota_enabled,
-    )
+    try:
+        functions.set_update_settings(
+            data.auto_update,
+            data.update_server,
+            data.check_interval_hours,
+            data.ota_enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.post("/update-confirm")

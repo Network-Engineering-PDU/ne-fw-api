@@ -22,7 +22,13 @@ DEFAULTS = {
     "github_ref": "main",
     "github_path": "",
     "github_token_path": "",
+    # Another update location than GitHub (provider "http_server"): an IP
+    # address or DNS name, with an optional scheme, port and folder.
+    "server_url": "",
 }
+
+# Daily, weekly, monthly, yearly
+CHECK_INTERVALS_HOURS = (24, 168, 720, 8760)
 
 
 def load_config() -> Dict[str, Any]:
@@ -49,8 +55,15 @@ def save_config(cfg: Dict[str, Any]) -> None:
     os.replace(tmp_path, OTA_CONFIG_FILE)
 
 
-def check_interval_seconds(cfg: Dict[str, Any]) -> int:
-    hours = int(cfg.get("check_interval_hours", 24))
-    if hours not in (1, 24, 168, 720):
+def check_interval_hours(cfg: Dict[str, Any]) -> int:
+    """The saved interval; daily for anything else (also the former
+    hourly)."""
+    try:
+        hours = int(cfg.get("check_interval_hours", 24))
+    except (TypeError, ValueError):
         hours = 24
-    return hours * 3600
+    return hours if hours in CHECK_INTERVALS_HOURS else 24
+
+
+def check_interval_seconds(cfg: Dict[str, Any]) -> int:
+    return check_interval_hours(cfg) * 3600

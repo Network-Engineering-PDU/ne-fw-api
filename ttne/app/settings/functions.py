@@ -881,7 +881,7 @@ def get_update_status(refresh: bool = False):
     """Get current update status"""
     from ttne.ota import config as ota_config
     from ttne.ota import state as ota_state
-    from ttne.ota.remote import provider_name
+    from ttne.ota.remote import DEFAULT_SERVER, provider_name
     from ttne.ota.updater import run_peek
     from ttne.update.coordinator import UpdateCoordinator
 
@@ -932,14 +932,16 @@ def get_update_status(refresh: bool = False):
 
     channel = UpdateCoordinator.public_status()
     is_pending = _is_update_pending() or ota_view.get("status") == "pending_confirm"
-    logger.info(
+    # Debug: the touchscreen asks every two seconds.
+    logger.debug(
         "Update status: pending=%s, auto_update=%s, server=%s, ota=%s",
         is_pending, auto_update, update_server, ota_view.get("status"),
     )
     return {
         "is_pending": is_pending,
         "auto_update": auto_update,
-        "update_server": update_server,
+        # The location in use: the default GitHub repository when none is set
+        "update_server": update_server or DEFAULT_SERVER,
         "installed_version": ota_view.get("installed_version", ""),
         "available_version": ota_view.get("available_version", ""),
         "last_check_time": ota_view.get("last_check_time", ""),
@@ -947,7 +949,7 @@ def get_update_status(refresh: bool = False):
         "ota_status": ota_view.get("status", "idle"),
         "last_error": ota_view.get("last_error", ""),
         "download_progress": ota_view.get("download_progress", 0),
-        "check_interval_hours": int(ota_cfg.get("check_interval_hours", 24)),
+        "check_interval_hours": ota_config.check_interval_hours(ota_cfg),
         "ota_enabled": bool(ota_cfg.get("enabled", True)),
         "ota_provider": provider_name(ota_cfg),
         "active_update_source": channel.get("active_update_source", ""),
@@ -959,15 +961,21 @@ def get_update_status(refresh: bool = False):
 
 def set_update_settings(auto_update, server, check_interval_hours=24,
         ota_enabled=True):
-    """Set auto-update flag, server address, and OTA options."""
-    from ttne.ota import config as ota_config
+    """Set auto-update flag, update location, and check interval.
 
+    server: GitHub (empty: the default repository) or a web server's IP
+    address or DNS name. Raises ValueError for an invalid location or
+    interval, before saving anything."""
+    from ttne.ota import config as ota_config
+    from ttne.ota.remote import apply_server
+
+    if check_interval_hours not in ota_config.CHECK_INTERVALS_HOURS:
+        raise ValueError("Check interval must be daily, weekly, monthly or yearly")
+    server = (server or "").strip()
+    cfg = apply_server(ota_config.load_config(), server)
     _write_update_config(auto_update, server)
-    cfg = ota_config.load_config()
-    # Automatic Updates is the master switch for background GitHub OTA checks.
+    # Automatic Updates is the master switch for the periodic checks.
     cfg["enabled"] = bool(auto_update)
-    if check_interval_hours not in (1, 24, 168, 720):
-        check_interval_hours = 24
     cfg["check_interval_hours"] = check_interval_hours
     ota_config.save_config(cfg)
     logger.info(
@@ -977,13 +985,16 @@ def set_update_settings(auto_update, server, check_interval_hours=24,
 
 
 def run_ota_check_now():
+    from ttne.ota import config as ota_config
     from ttne.ota import state as ota_state
+    from ttne.ota.remote import is_github
     from ttne.ota.updater import OFFLINE_MESSAGE, internet_available, run_check
 
     logger.info("Manual OTA check requested")
     global OTA_CHECK_THREAD
 
-    if not internet_available():
+    # A server on the local network works without the internet.
+    if is_github(ota_config.load_config()) and not internet_available():
         logger.info("Manual OTA check skipped: %s", OFFLINE_MESSAGE)
         ota_state.update_state(
             last_check_time=ota_state._utc_now(),
@@ -995,7 +1006,8 @@ def run_ota_check_now():
 
     def _run_check_bg():
         try:
-            run_check()
+            # Also while automatic updates are off: the user asked.
+            run_check(force=True)
         except Exception:
             logger.exception("Manual OTA check failed")
 
