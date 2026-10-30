@@ -1,5 +1,5 @@
 class Config:
-    VERSION = "0.4.1"
+    VERSION = "0.5.0"
     BOARD_ID = 1
     REV_ID = 1
     # Hardcoded (not os.path.expanduser("~")): processes launched by udev
