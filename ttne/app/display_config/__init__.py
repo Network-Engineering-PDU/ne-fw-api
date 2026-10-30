@@ -1,1 +1,1 @@
-from .routers import router
+from .routers import router, translations_router

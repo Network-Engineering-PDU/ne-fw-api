@@ -6,7 +6,8 @@ web UI can change display settings through this API.
 import os
 import threading
 
-from .models import DisplayConfig, LANGUAGES, TEXT_FIELDS
+from . import translations
+from .models import DisplayConfig, TEXT_FIELDS
 
 CONFIG_FILE = "/home/root/.cmdisplay.config"
 _lock = threading.Lock()
@@ -39,7 +40,7 @@ def load_config(path=CONFIG_FILE) -> DisplayConfig:
     except (KeyError, ValueError):
         pass
     # An unknown code keeps the default instead of discarding the whole file.
-    if raw.get("language") in LANGUAGES:
+    if raw.get("language") in translations.language_codes():
         data["language"] = raw["language"]
     for key in TEXT_FIELDS:
         if key in raw:
@@ -75,3 +76,16 @@ def save_config(config: DisplayConfig, path=CONFIG_FILE) -> None:
             except OSError:
                 pass
             raise
+
+
+def drop_unknown_language(path=CONFIG_FILE) -> None:
+    """After the translation file changed: a language it no longer has
+    goes back to English, so the display and the web UI agree."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            language = _parse(f.read()).get("language", "en")
+    except OSError:
+        return
+    if language not in translations.language_codes():
+        config = load_config(path)
+        save_config(config.copy(update={"language": "en"}), path)

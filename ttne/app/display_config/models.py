@@ -1,8 +1,7 @@
 # pylint: disable=no-name-in-module
 from pydantic import BaseModel, Field, validator
 
-# Touchscreen languages, the same codes as the web UI's LANGUAGES.
-LANGUAGES = ("en", "es", "de", "zh-hans", "ar")
+from . import translations
 
 TEXT_FIELDS = (
     "pdu_company", "pdu_rack", "pdu_system", "pdu_ups", "pdu_elec_board",
@@ -27,8 +26,10 @@ class DisplayConfig(BaseModel):
 
     @validator("language")
     def _known_language(cls, value):  # noqa: N805
-        if value not in LANGUAGES:
-            raise ValueError(f"must be one of {LANGUAGES}")
+        # The built-in languages and the ones the translation file adds
+        codes = translations.language_codes()
+        if value not in codes:
+            raise ValueError(f"must be one of {codes}")
         return value
 
     @validator(*TEXT_FIELDS)
